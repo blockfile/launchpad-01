@@ -99,14 +99,14 @@ what it reads from **B** (history/aggregates, may lag), and what it **writes**.
   preimage — the digest's "logo cannot be empty, baked in forever" applies to every
   field here, not just the logo), `factory.canLaunch(address)` as the single launch
   gate.
-- **Reads (B, provisional):** `GET /launch-configs` — which `(launchConfigId,
-  dexId)` pairs have ever been set, derived from A's `LaunchConfigSet`/
-  `DexConfigSet` events. **"Which ids exist" is a history question B answers; "what
-  does id 0 enforce right now" is always the live chain read above** — the config
-  picker's option list may come from B, but every value it displays and every value
-  submitted is re-read live, never cached from B. The factory has no on-chain
-  config-enumeration function, so without this B endpoint the picker degrades to a
-  small fixed probe range (§7 open item).
+- **Reads (B):** `GET /launch-configs` — the enabled `launchConfigId`s and enabled
+  `dexId`s that have ever been set, as two independent id lists (`{launchConfigIds,
+  dexIds}`), derived from A's `LaunchConfigSet`/`DexConfigSet` events. **"Which ids
+  exist" is a history question B answers; "what does id 0 enforce right now" is
+  always the live chain read above** — the config picker's option list comes from B,
+  but every value it displays and every value submitted is re-read live, never
+  cached from B. The factory has no on-chain config-enumeration function, so if B is
+  unreachable the picker degrades to a small fixed probe range (§7, §9).
 - **Writes:** `factory.launchToken(params, launchConfigId, dexId, salt) payable`,
   `value = launchFee + devBuyEth` exactly (`FeeMath.splitValue`'s own contract-side
   invariant — a mismatched value reverts). Logo upload happens first (via the IPFS
@@ -151,12 +151,12 @@ what it reads from **B** (history/aggregates, may lag), and what it **writes**.
 
 ### 2.4 `/portfolio`
 
-- **Reads (B, provisional):** `GET /wallets/:address/holdings` — every token this
-  launchpad has indexed that the connected wallet holds a nonzero balance of
-  (derived from ERC-20 `Transfer` events, per `30-frontend-architecture.md` §6.4).
-  Not yet in B's confirmed API surface (`00-digest.md` §3 lists `/tokens*`,
-  `/search`, `/stats` — no wallet-holdings endpoint); flagged as an open item to
-  settle with B (§7, §9).
+- **Reads (B):** `GET /wallets/:address/holdings` — every token this launchpad has
+  indexed that the connected wallet holds a nonzero balance of (derived from ERC-20
+  `Transfer` events, per `30-frontend-architecture.md` §6.4), cursor-paginated like
+  every other B list endpoint; each item includes a `valueEth` mark computed from
+  the token's own last traded price (nullable pre-first-trade). Specified in B's
+  spec/plan as of the 2026-08-22 reconciliation pass (§7).
 - **Reads (chain):** a manual "add token by address" fallback reads `balanceOf`
   directly for any single token/wallet pair B hasn't indexed yet or doesn't cover —
   cheap, single-token, always-fresh, and exactly the kind of read the hybrid rule
@@ -276,18 +276,65 @@ are untouched. `tokenAbi` is already complete for reading/writing against a
 specific launched token (it's the full compiled `Token` ABI, ERC-20 surface
 included) — no separate generic ERC-20 ABI is needed for token-side calls.
 
-**From B (not frozen):** the decomposition doc's target end-state is that B
-publishes response types into `packages/shared`, zod-validated at the C boundary.
-Since B is being designed in parallel and has published nothing yet, C owns a
-**provisional** typed client + zod schema (`web/src/lib/indexer/`) that mirrors the
-documented API surface (`00-digest.md` §3: `GET /tokens`, `/tokens/:addr`,
-`/tokens/:addr/candles`, `/tokens/:addr/trades`, `/tokens/:addr/holders`,
-`/search`, `/stats`) plus the two endpoints this spec's page designs need that
-aren't yet in that documented list — `GET /launch-configs` (§2.2) and `GET
-/wallets/:address/holdings` (§2.4) — both flagged as open items to reconcile with B
-(§9). When B publishes its real contract into `packages/shared`, the intent is a
-one-file swap (re-point the client's import), not a rewrite, because the provisional
-shapes were designed to match what B's own research doc already commits to.
+**From B (reconciled 2026-08-22):** the decomposition doc's target end-state is that
+B publishes response types into `packages/shared`, zod-validated at the C boundary.
+B is still being built in parallel, so C's client + zod schema
+(`web/src/lib/indexer/`) remains **provisional against fixed fixtures** (§8) — but
+its *shape* is no longer a guess: a reconciliation pass against
+[`2026-08-22-indexer-design.md`](2026-08-22-indexer-design.md)'s API surface table
+resolved every field/name/type difference to one agreed contract, and B's own plan
+now includes the two endpoints C's pages need that weren't originally documented —
+**`GET /launch-configs`** (§2.2) and **`GET /wallets/:address/holdings`** (§2.4) —
+both now specified in B's plan Task 9. The agreed contract, in full, per endpoint:
+
+- **Every `bigint`-backed value is a decimal string** on the wire (amounts, prices,
+  supply, block numbers/timestamps) — never a JSON number, never a float. Only
+  genuinely small integer fields (`holderCount`, `tradeCount`, `logIndex`, `poolFee`,
+  bps values) are plain JSON numbers. C's zod schemas (§8, Task 5 of the plan) are
+  typed accordingly — including `candlesResponseSchema`'s OHLC/volume fields, which
+  are strings on the wire and parsed to numbers only inside `fetchCandles`/
+  `PriceChart` for `lightweight-charts`, which needs plain floats.
+- **Pagination is uniform:** every list endpoint returns `{ items, nextCursor }`
+  with `nextCursor` **always present, explicitly `null` on the last page** — never
+  an omitted key. C's zod schemas use `.nullable()` (not `.optional()`) for every
+  `nextCursor` for exactly this reason.
+- `/tokens` (list) items: `address, name, symbol, logo, price, marketCap,
+  volume24h, priceChangeBps24h, holderCount, launchTimestamp` — no `poolAddress`
+  (that's detail-only). `marketCap` is a field B's original draft didn't have; added
+  during reconciliation because this spec's own §2.1 lists it as a required Explore
+  column.
+- `/tokens/:addr` (detail) additionally carries `deployer`, `dexId`, `launchConfigId`
+  (all already indexed, just not previously surfaced) — but **not** `feeWallet`:
+  B's indexer cannot derive it from any event it handles (see B spec's "Known
+  limitation, accepted"), and no C page actually reads it back from B, so it was
+  dropped from C's `tokenDetailSchema` rather than left as a field B can't fill.
+- `/tokens/:addr/holders` items add `pct` (holder's share of supply, 0-100); the
+  page response adds `totalHolders` — both cheap additions over data B already has
+  on hand, closing a gap in C's original schema.
+- `/search` returns `{ items: [...] }` (an object, matching every other list
+  endpoint), not a bare array — C's original `searchResultsSchema` was a bare
+  `z.array(...)`, which would have thrown on every real B response.
+- `/stats` is `{ tokensLaunched, totalVolumeQuote, totalTrades }` — **all-time**
+  counters, not a 24h window. C's original schema invented a windowed shape
+  (`totalVolume24hEth`, `totalLaunches24h`) with no basis in B's design; corrected
+  to match B's actual (and more useful, given B already has `/tokens/:addr/candles`
+  for windowed data) all-time counters.
+- `/launch-configs` returns `{ launchConfigIds: number[], dexIds: number[] }` — two
+  independent id lists (B's `launch_configs`/`dex_configs` tables are independent,
+  not pre-paired), not the `{launchConfigId, dexId}[]` pairs C's original draft
+  assumed. The config picker (plan Task 7) presents/cross-multiplies them and, per
+  this spec's own rule, always re-reads `getLaunchConfig`/`getDexConfig` live for
+  the values it displays — this endpoint only answers "which ids exist."
+- `/wallets/:address/holdings` returns `{ items: [{tokenAddress, name, symbol, logo,
+  balance, valueEth}], nextCursor }` — cursor-paginated like every other list
+  endpoint (C's original draft had no pagination on this one), `logo` not `logoUrl`
+  (matching B's field name everywhere else), and `valueEth` is nullable (mirrors
+  `price`'s nullability: null until the token's first trade).
+
+When B ships past the mocked-fixture stage, the intent is still a one-file swap
+(re-point the client's import) — the reconciliation pass is exactly what makes that
+swap safe, since C's zod schemas now assert the shape B actually produces rather
+than a shape nobody had agreed to yet.
 
 ## 8. Testing approach
 
@@ -318,11 +365,13 @@ a live chain simultaneously.
 
 ## 9. Open questions / to reconcile once B firms up
 
-- **`GET /launch-configs`** (§2.2) and **`GET /wallets/:address/holdings`** (§2.4)
-  are not in B's currently-documented API surface (`00-digest.md` §3). C's plan
-  builds against provisional versions of both; confirm the real shape with B before
-  either ships past the mocked-fixture stage.
-- **Config-picker degradation:** absent `/launch-configs`, the Launch page's config
+- ~~**`GET /launch-configs`** (§2.2) and **`GET /wallets/:address/holdings`**
+  (§2.4) are not in B's currently-documented API surface.~~ **Resolved
+  2026-08-22:** both are now specified in B's spec (API surface table) and plan
+  (Task 9), with the exact response shapes given in §7 above. C still builds
+  against fixed fixtures (§8) until B actually ships and runs, but the shape is
+  agreed, not provisional.
+- **Config-picker degradation:** absent a real B deployment to query, the Launch page's config
   picker has no on-chain enumeration to fall back to (`getLaunchConfig`/
   `getDexConfig` are direct-by-id lookups only) and must probe a small fixed id
   range (e.g. 0–9) via multicall, filtering for `enabled`. Fine today (only id 0 is
