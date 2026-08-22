@@ -10,6 +10,8 @@ export { launchFactoryAbi } from "../abis/LaunchFactory.ts";
 export { tokenAbi } from "../abis/Token.ts";
 export { lockerAbi } from "../abis/Locker.ts";
 export { uniswapV3PoolAbi } from "../abis/UniswapV3Pool.ts";
+export { uniswapV3FactoryAbi } from "../abis/UniswapV3Factory.ts";
+export { swapRouter02Abi } from "../abis/SwapRouter02.ts";
 export { erc20Abi } from "../abis/ERC20.ts";
 
 /** Per-chain contract addresses: our own (deployed) contracts plus the DEX

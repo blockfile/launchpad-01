@@ -33,8 +33,8 @@ function writeAbiFile(fileBaseName, exportName, abi) {
   console.log(`wrote abis/${fileBaseName}.ts (${exportName}, ${abi.length} entries)`);
 }
 
-function readForgeAbi(contractName) {
-  const artifactPath = join(CONTRACTS_OUT, `${contractName}.sol`, `${contractName}.json`);
+function readForgeAbi(contractName, sourceFileName = `${contractName}.sol`) {
+  const artifactPath = join(CONTRACTS_OUT, sourceFileName, `${contractName}.json`);
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
   return artifact.abi;
 }
@@ -80,7 +80,47 @@ const uniswapV3PoolAbi = [
     anonymous: false,
   },
 ];
-writeAbiFile("UniswapV3Pool", "uniswapV3PoolAbi", uniswapV3PoolAbi);
+// --- uniswapV3PoolAbi: merge the compiled IUniswapV3Pool interface (slot0/
+// token0/token1/initialize) with the hand-written Swap event above. Both are
+// needed — B indexes Swap; C reads slot0 for live price. ---
+const poolFunctionsAbi = readForgeAbi("IUniswapV3Pool", "IUniswapV3.sol");
+const uniswapV3PoolAbiFull = [...poolFunctionsAbi, ...uniswapV3PoolAbi];
+writeAbiFile("UniswapV3Pool", "uniswapV3PoolAbi", uniswapV3PoolAbiFull);
+
+// --- uniswapV3FactoryAbi: getPool/createPool, compiled, used by C to derive a
+// token's pool address (LaunchedToken doesn't carry it). ---
+const uniswapV3FactoryAbi = readForgeAbi("IUniswapV3Factory", "IUniswapV3.sol");
+writeAbiFile("UniswapV3Factory", "uniswapV3FactoryAbi", uniswapV3FactoryAbi);
+
+// --- swapRouter02Abi: both exactInputSingle shapes come from the compiled
+// ISwapRouter02 interface (it inherits IV3SwapRouter's no-deadline shape and
+// ISwapRouter's with-deadline shape). multicall/unwrapWETH9 exist in NO
+// compiled artifact in this repo (A's own contracts never call them — only
+// the atomic dev-buy's plain exactInputSingle is used on the contract side),
+// so they're hand-added here, matching the verified live-router shape
+// already exercised in pons-launcher/backend/src/evm/abi.js.
+const swapRouter02CompiledAbi = readForgeAbi("ISwapRouter02", "IUniswapV3.sol");
+const swapRouter02Abi = [
+  ...swapRouter02CompiledAbi,
+  {
+    type: "function",
+    name: "multicall",
+    inputs: [{ name: "data", type: "bytes[]", internalType: "bytes[]" }],
+    outputs: [{ name: "results", type: "bytes[]", internalType: "bytes[]" }],
+    stateMutability: "payable",
+  },
+  {
+    type: "function",
+    name: "unwrapWETH9",
+    inputs: [
+      { name: "amountMinimum", type: "uint256", internalType: "uint256" },
+      { name: "recipient", type: "address", internalType: "address" },
+    ],
+    outputs: [],
+    stateMutability: "payable",
+  },
+];
+writeAbiFile("SwapRouter02", "swapRouter02Abi", swapRouter02Abi);
 
 // ERC-20 `Transfer` event, extracted verbatim from the compiled OpenZeppelin
 // IERC20 artifact already in contracts/out/ so the fragment is guaranteed to

@@ -980,6 +980,11 @@ export const launchFactoryAbi = [
   },
   {
     "type": "error",
+    "name": "PositionManagerMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ReentrancyGuardReentrantCall",
     "inputs": []
   },
