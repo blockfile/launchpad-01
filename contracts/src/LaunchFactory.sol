@@ -150,6 +150,21 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     ///         destination can never be silently redirected post-deploy by a
     ///         compromised/careless owner key; a deployment that genuinely
     ///         needs to change it redeploys the factory, same as `locker`.
+    ///
+    ///         OPERATIONAL CONSTRAINT (accepted-by-design, not fixed here):
+    ///         `launchToken` pushes the fee with a plain `.call{value:}` and
+    ///         reverts the whole launch on failure (see `FeeTransferFailed`).
+    ///         Because this address is immutable, a `protocolWallet` that
+    ///         reverts on receiving ETH (e.g. a contract with no
+    ///         payable `receive`/`fallback`, or one that consumes >2300 gas
+    ///         and runs out) would brick EVERY launch with no recovery short
+    ///         of redeploying the factory. `protocolWallet` MUST therefore be
+    ///         an EOA or a contract that reliably accepts ETH (a plain
+    ///         multisig/timelock treasury is fine). Redesigning this to a
+    ///         pull/escrow model is deliberately out of scope (mainnet is
+    ///         audit-gated); this constraint is enforced operationally at
+    ///         deploy time — see `Deploy.s.sol` and
+    ///         `docs/security/checklist.md`.
     address public immutable protocolWallet;
 
     /// @notice The protocol's fixed share of the swap-fee split passed to
@@ -226,6 +241,15 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     ///      `Locker`'s contract-level NatSpec), so this must be caught here,
     ///      before such a config is ever used by a launch.
     error PositionManagerMismatch();
+    /// @dev `setDexConfig`'s `config.tickSpacing` did not equal the canonical
+    ///      spacing the pool factory enforces for `config.poolFee`
+    ///      (`IUniswapV3Factory.feeAmountTickSpacing(poolFee)`). A mismatched
+    ///      spacing bricks every launch on that dexId inside the position
+    ///      manager's `mint` (the one-sided range is built against a spacing
+    ///      the pool won't accept), so it must be caught at admin time.
+    error TickSpacingMismatch();
+    /// @dev `renounceOwnership` is permanently disabled — see the override.
+    error RenounceDisabled();
 
     constructor(address owner_, address locker_, uint256 launchFee_, address protocolWallet_) Ownable(owner_) {
         if (locker_ == address(0) || protocolWallet_ == address(0)) revert ZeroAddress();
@@ -258,8 +282,21 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     ///         `positionManager` to collect — a mismatched config would
     ///         permanently strand that token's swap fees (see
     ///         `PositionManagerMismatch`).
+    ///
+    ///         Also enforces `config.tickSpacing ==
+    ///         IUniswapV3Factory(config.factory).feeAmountTickSpacing(config.poolFee)`:
+    ///         the one-sided seed range in `_oneSidedTickRange` is built
+    ///         against `config.tickSpacing`, but the real pool only accepts
+    ///         ticks aligned to the factory's canonical spacing for that fee
+    ///         tier — a misconfigured spacing would revert every launch on
+    ///         this dexId inside the position manager's `mint` (see
+    ///         `TickSpacingMismatch`). Queried live from the configured
+    ///         factory so it can never drift from that venue's real rule.
     function setDexConfig(uint256 id, DexConfig calldata config) external onlyOwner {
         if (config.positionManager != Locker(locker).positionManager()) revert PositionManagerMismatch();
+        if (config.tickSpacing != IUniswapV3Factory(config.factory).feeAmountTickSpacing(config.poolFee)) {
+            revert TickSpacingMismatch();
+        }
         _dexConfigs[id] = config;
         emit DexConfigSet(id);
     }
@@ -282,6 +319,16 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     function setWhitelistedLauncher(address launcher, bool allowed) external onlyOwner {
         whitelistedLaunchers[launcher] = allowed;
         emit WhitelistedLauncherSet(launcher, allowed);
+    }
+
+    /// @notice Permanently disabled (defense-in-depth). Renouncing ownership
+    ///         would strand every owner-only config control
+    ///         (`setDexConfig`/`setLaunchConfig`/the launch kill switches)
+    ///         with no way to ever recover them. Ownership is meant to move
+    ///         to a timelock + multisig via `Ownable2Step.transferOwnership`,
+    ///         never to `address(0)`.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
     }
 
     // ---------------------------------------------------------------------

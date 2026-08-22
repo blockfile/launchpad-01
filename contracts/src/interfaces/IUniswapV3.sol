@@ -44,6 +44,14 @@ interface IUniswapV3Factory {
     /// @notice Returns the pool address for the given pair and fee, or
     ///         address(0) if it does not exist. Order-independent.
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+
+    /// @notice The canonical tick spacing this factory enforces for pools of
+    ///         the given fee tier (0 for a fee tier the factory does not
+    ///         recognize). A standard Uniswap V3 factory function — the pool
+    ///         `mint` only accepts ticks aligned to this spacing, so
+    ///         `setDexConfig` validates a `DexConfig.tickSpacing` against it
+    ///         (see `LaunchFactory.setDexConfig` / `TickSpacingMismatch`).
+    function feeAmountTickSpacing(uint24 fee) external view returns (int24);
 }
 
 interface IUniswapV3Pool {

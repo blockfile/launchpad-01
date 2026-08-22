@@ -118,6 +118,18 @@ caller-supplied per-transaction; the dev-buy delivery and `Locker`'s fee splits 
 recipient could use to force a revert. No dedicated DoS test exists for this; it is a design-review
 conclusion recorded here for the audit to independently confirm or challenge.
 
+**Operational constraint — `protocolWallet` must reliably receive value (F5, accepted-by-design, NOT
+redesigned).** Because `LaunchFactory.protocolWallet` is immutable and the launch fee is pushed with a plain
+`.call{value:}` that reverts the whole launch on failure (`FeeTransferFailed`), a `protocolWallet` that
+reverts on receiving ETH (a contract with no payable `receive`/`fallback`, or one that runs out of gas)
+would brick **every** launch with no recovery short of redeploying the factory. The same address is also
+wired as the `Locker`'s ERC-20 fee destination and its first fee collector (`Deploy.s.sol`), so it must
+reliably accept ERC-20 transfers too. **`protocolWallet` MUST therefore be an EOA or a contract that
+reliably accepts ETH/ERC-20 (a plain multisig or timelock treasury is fine); never a contract with a
+non-payable or reverting receive path.** Converting the fee path to a pull/escrow model is deliberately out
+of scope (mainnet is audit-gated) — this is enforced operationally at deploy time, and documented in
+`LaunchFactory.protocolWallet`'s NatSpec and `script/Deploy.s.sol`.
+
 ### 7. Static analysis (Slither)
 
 Installed via `pip install slither-analyzer` (version 0.11.6) into the ambient Python 3.12 environment;

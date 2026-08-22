@@ -50,6 +50,7 @@ contract LaunchFactoryHarness is LaunchFactory {
 
 contract LaunchFactoryTest is Test {
     LaunchFactoryHarness factory;
+    MockV3Factory v3Factory;
 
     address owner = address(0x0121EA);
     address locker;
@@ -71,6 +72,12 @@ contract LaunchFactoryTest is Test {
         // calls `lockPosition`, so it's never checked against a real factory.
         locker = address(new Locker(address(0xF00D), DEX_POSITION_MANAGER, owner));
         factory = new LaunchFactoryHarness(owner, locker, LAUNCH_FEE, protocolWallet);
+        // `setDexConfig` now queries `config.factory.feeAmountTickSpacing`
+        // (see `TickSpacingMismatch`), so the DexConfig fixture's `factory`
+        // must be a live contract implementing it — a bare address would
+        // revert every `setDexConfig` call. The canonical Uniswap V3 mapping
+        // this mock seeds returns 200 for the pons `poolFee == 10000` tier.
+        v3Factory = new MockV3Factory();
     }
 
     function _ponsLaunchConfig() internal pure returns (LaunchFactory.LaunchConfig memory) {
@@ -88,10 +95,10 @@ contract LaunchFactoryTest is Test {
         });
     }
 
-    function _ponsDexConfig() internal pure returns (LaunchFactory.DexConfig memory) {
+    function _ponsDexConfig() internal view returns (LaunchFactory.DexConfig memory) {
         return LaunchFactory.DexConfig({
             name: "robinhood-v3",
-            factory: address(0xFAC7024),
+            factory: address(v3Factory),
             positionManager: DEX_POSITION_MANAGER,
             swapRouter: address(0x50171E12),
             poolFee: 10000,
@@ -179,6 +186,49 @@ contract LaunchFactoryTest is Test {
         factory.setDexConfig(0, cfg);
 
         assertEq(factory.getDexConfig(0).positionManager, DEX_POSITION_MANAGER);
+    }
+
+    /// @dev F6: `setDexConfig` validates `config.tickSpacing` against the pool
+    ///      factory's canonical spacing for `config.poolFee`
+    ///      (`IUniswapV3Factory.feeAmountTickSpacing`). A spacing that doesn't
+    ///      match the fee tier's canonical value would brick every launch on
+    ///      that dexId inside the position manager's `mint`, so it must be
+    ///      rejected at admin time (see `TickSpacingMismatch`).
+    function test_setDexConfig_reverts_on_tickSpacing_mismatch() public {
+        LaunchFactory.DexConfig memory cfg = _ponsDexConfig();
+        cfg.tickSpacing = 199; // canonical spacing for poolFee 10000 is 200
+
+        vm.prank(owner);
+        vm.expectRevert(LaunchFactory.TickSpacingMismatch.selector);
+        factory.setDexConfig(0, cfg);
+    }
+
+    /// @dev The paired pass case: the canonical pons tier (poolFee 10000 ->
+    ///      tickSpacing 200) is accepted, and a *different* canonical tier
+    ///      (poolFee 3000 -> 60) is too — proving the check reads the
+    ///      factory's real fee->spacing mapping, not a hardcoded 200.
+    function test_setDexConfig_accepts_canonical_tickSpacing() public {
+        LaunchFactory.DexConfig memory cfg = _ponsDexConfig();
+        assertEq(cfg.poolFee, 10000);
+        assertEq(cfg.tickSpacing, int24(200));
+
+        vm.prank(owner);
+        factory.setDexConfig(0, cfg);
+        assertEq(factory.getDexConfig(0).tickSpacing, int24(200));
+
+        cfg.poolFee = 3000;
+        cfg.tickSpacing = 60;
+        vm.prank(owner);
+        factory.setDexConfig(1, cfg);
+        assertEq(factory.getDexConfig(1).tickSpacing, int24(60));
+    }
+
+    /// @dev F1: `renounceOwnership` is permanently disabled — renouncing would
+    ///      strand every owner-only config control forever.
+    function test_renounceOwnership_reverts() public {
+        vm.prank(owner);
+        vm.expectRevert(LaunchFactory.RenounceDisabled.selector);
+        factory.renounceOwnership();
     }
 
     // -------------------------------------------------------------------

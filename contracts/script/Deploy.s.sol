@@ -100,6 +100,16 @@ contract Deploy is Script {
         // treasury yet); a production `--broadcast` MUST set the
         // `PROTOCOL_WALLET` env var to the actual treasury/multisig address,
         // or every launch fee is permanently routed to the deploying EOA.
+        //
+        // OPERATIONAL CONSTRAINT (F5, accepted-by-design): the launch fee is
+        // pushed with a plain `.call{value:}` against this IMMUTABLE address
+        // and the whole launch reverts if it fails (`FeeTransferFailed`), so
+        // `PROTOCOL_WALLET` MUST be an EOA or a contract that reliably accepts
+        // ETH (a plain multisig/timelock treasury is fine). A `protocolWallet`
+        // that reverts on receiving ETH bricks EVERY launch with no recovery
+        // short of redeploying the factory. Same address is also wired as the
+        // Locker's ERC-20 fee destination + fee collector below, so it must
+        // reliably accept ERC-20 transfers too. See docs/security/checklist.md.
         address protocolWallet_ = vm.envOr("PROTOCOL_WALLET", deployer);
         (factory, locker) = _deployAndWire(
             deployer, protocolWallet_, LIVE_V3_FACTORY, LIVE_POSITION_MANAGER, LIVE_SWAP_ROUTER, LIVE_WETH
@@ -145,6 +155,24 @@ contract Deploy is Script {
         locker = new Locker(predictedFactory, positionManager_, deployer);
         factory = new LaunchFactory(deployer, address(locker), LAUNCH_FEE, protocolWallet_);
         require(address(factory) == predictedFactory, "Deploy: nonce prediction drifted");
+
+        // --- Wire the Locker's fee plumbing (runs as `deployer`, the Locker's
+        //     constructor-set owner) ---
+        // (F4) The Locker constructor defaults `protocolWallet` to its `owner_`
+        // (the deploy EOA). Point it at the real treasury/multisig instead, so
+        // every token's protocol swap-fee share (the 30% split) is routed to
+        // the treasury, not left going to the deploying EOA. Like
+        // `LaunchFactory.protocolWallet`, `protocolWallet_` MUST be an EOA or a
+        // contract that reliably accepts ERC-20 transfers (a plain
+        // multisig/timelock treasury is fine).
+        locker.setProtocolWallet(protocolWallet_);
+        // (F1) Whitelist an operational fee collector so the allow-list is
+        // never empty from genesis. Left empty, and with `renounceOwnership`
+        // now disabled but the owner key still loseable, `collectFees` would
+        // revert `NotFeeCollector` for everyone forever — every token's swap
+        // fees permanently uncollectible. The protocol wallet is the sensible
+        // operator to trigger collection.
+        locker.setFeeCollector(protocolWallet_, true);
 
         factory.setDexConfig(
             0,

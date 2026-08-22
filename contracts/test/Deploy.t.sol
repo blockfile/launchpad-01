@@ -103,6 +103,11 @@ contract DeployTest is Test {
         assertEq(locker.positionManager(), address(positionManager));
         assertEq(locker.owner(), address(harness));
         assertEq(factory.owner(), address(harness));
+        // F4: the deploy script must wire the Locker's protocol fee destination
+        // to the treasury, not leave it as the constructor default (the deploy
+        // EOA). Otherwise every token's 30% protocol swap-fee share silently
+        // goes to the deployer instead of the treasury.
+        assertEq(locker.protocolWallet(), protocolWallet, "locker.protocolWallet must be wired to the treasury");
     }
 
     function test_launch_fee_is_the_pons_value() public view {
@@ -190,5 +195,36 @@ contract DeployTest is Test {
 
         // --- Protocol launch fee collected to the wired protocolWallet ---
         assertEq(protocolWallet.balance, LAUNCH_FEE);
+    }
+
+    // =====================================================================
+    // F1(c): the script's wiring leaves a working fee collector from genesis
+    // =====================================================================
+
+    /// @dev The deploy script whitelists an operational fee collector (the
+    ///      protocol wallet) so the `feeCollectors` allow-list is never empty
+    ///      from genesis — otherwise, with `renounceOwnership` disabled but
+    ///      the owner key still loseable, every token's swap fees could become
+    ///      permanently uncollectible. Prove it end-to-end: the whitelisted
+    ///      wallet can actually trigger `collectFees` on a freshly-launched
+    ///      token, while a non-whitelisted caller is rejected.
+    function test_deployed_locker_has_working_fee_collector() public {
+        assertTrue(locker.feeCollectors(protocolWallet), "protocol wallet must be a fee collector from genesis");
+
+        LaunchFactory.TokenParams memory params = _defaultParams();
+        bytes32 salt = keccak256("fee-collector-launch");
+        vm.prank(launcher);
+        address token = factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        // A non-whitelisted caller cannot collect.
+        vm.prank(address(0xBADC0FFEE));
+        vm.expectRevert(Locker.NotFeeCollector.selector);
+        locker.collectFees(token);
+
+        // The whitelisted protocol wallet can. Default mock collect amounts
+        // are zero, so this proves the allow-list gate lets it through (no
+        // `NotFeeCollector` revert), which is exactly the F1 property.
+        vm.prank(protocolWallet);
+        locker.collectFees(token);
     }
 }

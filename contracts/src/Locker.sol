@@ -81,6 +81,13 @@ contract Locker is Ownable2Step, ERC721Holder, ReentrancyGuard {
     error NotFeeCollector();
     error FeeShareTooHigh();
     error ZeroAddress();
+    /// @dev A fee destination was set to the Locker's own address, which
+    ///      would silently sink that share into the Locker forever (the
+    ///      Locker is never a pairPool, so no anti-snipe catches it, and
+    ///      there is no rescue path — see the contract-level NatSpec).
+    error SelfAddress();
+    /// @dev `renounceOwnership` is permanently disabled — see the override.
+    error RenounceDisabled();
 
     event PositionLocked(
         address indexed token, uint256 indexed positionId, address indexed deployer, uint256 protocolFeeShare
@@ -211,6 +218,10 @@ contract Locker is Ownable2Step, ERC721Holder, ReentrancyGuard {
         if (!rec.locked) revert NotLocked();
         if (msg.sender != rec.deployer) revert NotDeployer();
         if (wallet == address(0)) revert ZeroAddress();
+        // Reject the Locker's own address: redirecting this token's creator
+        // fee share to the Locker would silently strand it here forever, with
+        // no rescue path (see the contract-level NatSpec).
+        if (wallet == address(this)) revert SelfAddress();
 
         rec.creatorWallet = wallet;
         emit FeeRedirectSet(token, wallet);
@@ -226,7 +237,25 @@ contract Locker is Ownable2Step, ERC721Holder, ReentrancyGuard {
     ///         collected fees.
     function setProtocolWallet(address wallet) external onlyOwner {
         if (wallet == address(0)) revert ZeroAddress();
+        // Reject the Locker's own address: a self-transfer would silently
+        // sink the protocol's fee share into this contract forever, with no
+        // rescue path (see the contract-level NatSpec). The Locker is never
+        // a token's pairPool, so no anti-snipe check would ever catch it.
+        if (wallet == address(this)) revert SelfAddress();
         protocolWallet = wallet;
         emit ProtocolWalletSet(wallet);
+    }
+
+    /// @notice Permanently disabled. This contract's entire design point is
+    ///         permanence-by-construction (no withdraw, no rescue — see the
+    ///         contract-level NatSpec), and renouncing ownership while the
+    ///         `feeCollectors` allow-list is empty would freeze all fee
+    ///         collection forever (`collectFees` reverts `NotFeeCollector`
+    ///         for everyone, and `setFeeCollector`/`setProtocolWallet` become
+    ///         uncallable). Ownership is never renounceable here; use
+    ///         `Ownable2Step.transferOwnership` to hand control to a
+    ///         timelock/multisig instead.
+    function renounceOwnership() public pure override {
+        revert RenounceDisabled();
     }
 }

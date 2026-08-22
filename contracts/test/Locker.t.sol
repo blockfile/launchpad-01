@@ -257,4 +257,34 @@ contract LockerTest is Test {
         assertEq(token0.balanceOf(newWallet), 7e18);
         assertEq(token0.balanceOf(deployer), 0);
     }
+
+    // --- 5. F1/F2/F3: renounce disabled + self-address fee-sink guards -----
+
+    /// @dev F1: renouncing ownership while `feeCollectors` is empty would
+    ///      freeze all fee collection forever (`collectFees` reverts for
+    ///      everyone and `setFeeCollector`/`setProtocolWallet` become
+    ///      uncallable). The override disables it permanently, for any caller.
+    function test_renounceOwnership_reverts() public {
+        vm.prank(owner);
+        vm.expectRevert(Locker.RenounceDisabled.selector);
+        locker.renounceOwnership();
+    }
+
+    /// @dev F2: setting `protocolWallet` to the Locker's own address would
+    ///      silently sink the protocol fee share into the Locker forever.
+    function test_setProtocolWallet_reverts_on_self_address() public {
+        vm.prank(owner);
+        vm.expectRevert(Locker.SelfAddress.selector);
+        locker.setProtocolWallet(address(locker));
+    }
+
+    /// @dev F3: redirecting a token's creator fee share to the Locker's own
+    ///      address would strand that share forever.
+    function test_setFeeRedirect_reverts_on_self_address() public {
+        _transferNftAndLock();
+
+        vm.prank(deployer);
+        vm.expectRevert(Locker.SelfAddress.selector);
+        locker.setFeeRedirect(launchedToken, address(locker));
+    }
 }

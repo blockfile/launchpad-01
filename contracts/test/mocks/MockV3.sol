@@ -39,6 +39,22 @@ contract MockV3Factory is IUniswapV3Factory {
     mapping(address => mapping(address => mapping(uint24 => address))) public pools;
     bool public revertOnCreatePool;
 
+    /// @dev Canonical Uniswap V3 fee-tier -> tick-spacing mapping, seeded to
+    ///      match the real factory so `LaunchFactory.setDexConfig`'s
+    ///      tickSpacing validation (see `TickSpacingMismatch`) behaves against
+    ///      this mock exactly as it would against the live factory. Unknown
+    ///      fee tiers read back 0, mirroring the real factory. The public
+    ///      mapping's auto-getter satisfies
+    ///      `IUniswapV3Factory.feeAmountTickSpacing`.
+    mapping(uint24 => int24) public feeAmountTickSpacing;
+
+    constructor() {
+        feeAmountTickSpacing[100] = 1;
+        feeAmountTickSpacing[500] = 10;
+        feeAmountTickSpacing[3000] = 60;
+        feeAmountTickSpacing[10000] = 200;
+    }
+
     /// @dev Task-8 addition: a pool doesn't exist until `createPool` deploys
     ///      it inside the same atomic `launchToken` call that then
     ///      immediately calls `initialize` on it — so there's no address a
