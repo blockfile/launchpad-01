@@ -49,5 +49,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     globals: true,
+    // The local-Anvil integration test is its own vitest project
+    // (vitest.anvil.config.ts) — never collected by the default `test` run,
+    // so `pnpm --filter web test` never needs a running chain.
+    exclude: ["**/node_modules/**", "**/dist/**", "src/test/anvil/**"],
   },
 });
