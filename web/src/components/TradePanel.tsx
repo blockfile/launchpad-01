@@ -176,7 +176,15 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
             functionName: "approve",
             args: [swapRouter, amountIn],
           });
-          await waitForTransactionReceipt(config, { hash: approveHash });
+          // viem's waitForTransactionReceipt RESOLVES (never throws) for a
+          // reverted tx — it only rejects on timeout/replacement. So a reverted
+          // approve must be caught by its `status`, or we would fall through and
+          // submit a swap that then reverts on transferFrom.
+          const approveReceipt = await waitForTransactionReceipt(config, { hash: approveHash });
+          if (approveReceipt.status !== "success") {
+            notify("Approval reverted — swap not submitted.", "error");
+            return;
+          }
           await allowanceRead.refetch();
         }
         hash = await writeContractAsync(
@@ -204,7 +212,16 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
         );
       }
 
-      await waitForTransactionReceipt(config, { hash });
+      // Same caveat as the approve above: a reverted swap RESOLVES here with
+      // status "reverted" (realistic — the price can move past our fresh
+      // minAmountOut between the client check and block inclusion). Only a
+      // "success" status is a real trade: never show a success toast, invalidate
+      // queries, or clear the input for a reverted swap that moved no funds.
+      const swapReceipt = await waitForTransactionReceipt(config, { hash });
+      if (swapReceipt.status !== "success") {
+        notify("Swap failed (reverted) — no funds moved. The price may have moved past your slippage.", "error");
+        return;
+      }
       notify("Swap complete", "ok");
 
       // Reflect the new trade without a manual refresh; B's own indexing fills

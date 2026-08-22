@@ -30,5 +30,14 @@ export function resolveAddress(chainId: number, key: keyof ChainAddresses): `0x$
       `No ${CONTRACT_LABELS[key]} address for chain ${chainId}. Set VITE_${key.toUpperCase()}_ADDRESS for local dev (e.g. a local-Anvil deploy), or wait for a real deploy to populate packages/shared/addresses/${chainId}.json.`,
     );
   }
+  // Defensive: this address feeds irreversible swap/router writes. A zero
+  // address in the JSON (or a blanked env override) must never flow through —
+  // it would send funds/allowances to address(0). Reject it as loudly as a
+  // missing one.
+  if (/^0x0{40}$/i.test(resolved)) {
+    throw new Error(
+      `${CONTRACT_LABELS[key]} address for chain ${chainId} is the zero address — refusing to use it for a contract call. Fix packages/shared/addresses/${chainId}.json or the VITE_${key.toUpperCase()}_ADDRESS override.`,
+    );
+  }
   return resolved as `0x${string}`;
 }

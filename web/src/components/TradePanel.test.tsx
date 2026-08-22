@@ -34,6 +34,7 @@ const h = vi.hoisted(() => {
     refetch: vi.fn(),
     writeContractAsync: vi.fn(),
     waitForReceipt: vi.fn(),
+    notify: vi.fn(),
   };
 });
 
@@ -86,7 +87,14 @@ vi.mock("../lib/contracts", () => ({
   resolveAddress: () => h.FACTORY,
 }));
 
+vi.mock("../lib/toast", () => ({
+  notify: h.notify,
+}));
+
 import { TradePanel } from "./TradePanel";
+
+// Observe post-swap cache invalidation without swapping out the real client.
+const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
 
 beforeEach(() => {
   h.refetch.mockReset();
@@ -95,6 +103,8 @@ beforeEach(() => {
   h.writeContractAsync.mockResolvedValue(("0x" + "ab".repeat(32)) as `0x${string}`);
   h.waitForReceipt.mockReset();
   h.waitForReceipt.mockResolvedValue({ status: "success" });
+  h.notify.mockReset();
+  invalidateSpy.mockClear();
   h.account = ("0x" + "11".repeat(20)) as `0x${string}`;
   h.blockNumber = 100n;
   h.restrictionsEndBlock = 1000n;
@@ -197,6 +207,9 @@ describe("TradePanel", () => {
     expect(call.args[0].tokenOut).toBe(h.TOKEN);
     expect(call.args[0].amountOutMinimum).toBeGreaterThan(0n); // never a zero floor
     await waitFor(() => expect(h.waitForReceipt).toHaveBeenCalled());
+    // A confirmed (status "success") receipt ⇒ success toast + invalidation.
+    await waitFor(() => expect(h.notify).toHaveBeenCalledWith("Swap complete", "ok"));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["trades", h.TOKEN] });
   });
 
   it("SELL with no standing allowance: approves the EXACT amountIn first, then multicalls", async () => {
@@ -230,5 +243,42 @@ describe("TradePanel", () => {
 
     await waitFor(() => expect(h.writeContractAsync).toHaveBeenCalledTimes(1));
     expect(h.writeContractAsync.mock.calls[0][0].functionName).toBe("multicall");
+  });
+
+  // --- Reverted receipts (viem resolves — never throws — on revert) --------
+
+  it("BUY whose swap reverts on-chain: error toast, NO success toast, NO query invalidation", async () => {
+    // waitForTransactionReceipt RESOLVES with status "reverted" for a reverted
+    // tx — the panel must treat that as a failure, not a false success.
+    h.waitForReceipt.mockResolvedValue({ status: "reverted" });
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /swap/i }));
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(expect.stringMatching(/reverted/i), "error"),
+    );
+    expect(h.notify).not.toHaveBeenCalledWith("Swap complete", "ok");
+    // A trade that moved no funds must not invalidate the trade/holder caches.
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["trades", h.TOKEN] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["holders", h.TOKEN] });
+  });
+
+  it("SELL whose APPROVE reverts: does NOT submit the swap", async () => {
+    // The approve receipt (the only waitForTransactionReceipt before the swap)
+    // resolves reverted ⇒ the swap write must never fire.
+    h.waitForReceipt.mockResolvedValue({ status: "reverted" });
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    fireEvent.click(screen.getByRole("button", { name: /sell/i }));
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /swap/i }));
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(expect.stringMatching(/approval reverted/i), "error"),
+    );
+    // Only the approve was ever written — no swap followed the failed approval.
+    expect(h.writeContractAsync).toHaveBeenCalledTimes(1);
+    expect(h.writeContractAsync.mock.calls[0][0].functionName).toBe("approve");
+    expect(h.notify).not.toHaveBeenCalledWith("Swap complete", "ok");
   });
 });
