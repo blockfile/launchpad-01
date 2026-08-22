@@ -5,6 +5,13 @@ import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {LaunchFactory} from "../src/LaunchFactory.sol";
 import {Token} from "../src/Token.sol";
+import {Locker} from "../src/Locker.sol";
+import {FeeMath} from "../src/lib/FeeMath.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ISwapRouter, IV3SwapRouter, ISwapRouter02} from "../src/interfaces/IUniswapV3.sol";
+import {MockV3Factory, MockPool, MockPositionManager, MockWETH, MockRevert} from "./mocks/MockV3.sol";
+import {TickMath} from "../src/lib/TickMath.sol";
 
 /// @notice Test-only harness exposing LaunchFactory's internal CREATE2
 ///         helpers so the test suite can independently verify
@@ -18,10 +25,26 @@ import {Token} from "../src/Token.sol";
 ///         `LaunchFactory._buildTokenInitcode`, so this cross-check does not
 ///         just call the same mapping code twice.
 contract LaunchFactoryHarness is LaunchFactory {
-    constructor(address owner_, address locker_, uint256 launchFee_) LaunchFactory(owner_, locker_, launchFee_) {}
+    constructor(address owner_, address locker_, uint256 launchFee_, address protocolWallet_)
+        LaunchFactory(owner_, locker_, launchFee_, protocolWallet_)
+    {}
 
     function deployWithInitcode(bytes32 salt, bytes memory initcode) external returns (address) {
         return _deploy(salt, initcode);
+    }
+
+    /// @dev Exposes the tick-alignment math for direct unit testing. The
+    ///      end-to-end `launchToken` tests all happen to use a tick that's
+    ///      already a multiple of the configured tickSpacing, so they never
+    ///      exercise the rounding-adjustment branches in
+    ///      `_floorToSpacing`/`_ceilToSpacing` — this harness lets a test
+    ///      check those directly with deliberately misaligned ticks.
+    function oneSidedTickRange(int24 initialTick, int24 tickSpacing, bool tokenIsToken0)
+        external
+        pure
+        returns (int24 tickLower, int24 tickUpper)
+    {
+        return _oneSidedTickRange(initialTick, tickSpacing, tokenIsToken0);
     }
 }
 
@@ -30,10 +53,11 @@ contract LaunchFactoryTest is Test {
 
     address owner = address(0x0121EA);
     address locker = address(0x10C4E5);
+    address protocolWallet = address(0x9877E);
     uint256 constant LAUNCH_FEE = 0.0005 ether;
 
     function setUp() public {
-        factory = new LaunchFactoryHarness(owner, locker, LAUNCH_FEE);
+        factory = new LaunchFactoryHarness(owner, locker, LAUNCH_FEE, protocolWallet);
     }
 
     function _ponsLaunchConfig() internal pure returns (LaunchFactory.LaunchConfig memory) {
@@ -123,7 +147,7 @@ contract LaunchFactoryTest is Test {
     }
 
     function test_launchFee_is_whatever_the_constructor_was_given() public {
-        LaunchFactoryHarness f2 = new LaunchFactoryHarness(owner, locker, 123456789);
+        LaunchFactoryHarness f2 = new LaunchFactoryHarness(owner, locker, 123456789, protocolWallet);
         assertEq(f2.launchFee(), 123456789);
     }
 
@@ -317,5 +341,516 @@ contract LaunchFactoryTest is Test {
 
         address predictedOtherDeployer = factory.predictTokenAddress(params, 0, 0, salt, address(0xAAA2));
         assertTrue(predictedDex0 != predictedOtherDeployer, "a different deployer must change the address");
+    }
+
+    // -------------------------------------------------------------------
+    // One-sided tick range math (Task 8) — deliberately misaligned ticks,
+    // since the end-to-end launch tests all happen to use an
+    // already-spacing-aligned tick and would never exercise the
+    // rounding-adjustment branches otherwise.
+    // -------------------------------------------------------------------
+
+    function test_oneSidedTickRange_token0_aligned_tick_unchanged() public view {
+        (int24 lower, int24 upper) = factory.oneSidedTickRange(-204200, 200, true);
+        assertEq(lower, -204200);
+        assertEq(upper, 887200); // maxUsableTick for spacing 200
+    }
+
+    function test_oneSidedTickRange_token1_aligned_tick_unchanged() public view {
+        (int24 lower, int24 upper) = factory.oneSidedTickRange(-204200, 200, false);
+        assertEq(lower, -887200); // minUsableTick for spacing 200
+        assertEq(upper, -204200);
+    }
+
+    function test_oneSidedTickRange_token0_ceils_misaligned_negative_tick() public view {
+        // -204199 is one off from the -204200 multiple; token0 case takes
+        // the ceiling (smallest multiple >= tick), which rounds *toward*
+        // zero here: -204000, not -204200.
+        (int24 lower,) = factory.oneSidedTickRange(-204199, 200, true);
+        assertEq(lower, -204000);
+    }
+
+    function test_oneSidedTickRange_token1_floors_misaligned_negative_tick() public view {
+        // Same misaligned tick, token1 case takes the floor (largest
+        // multiple <= tick): -204200, the multiple just past -204199 going
+        // further from zero (-204000 is > -204199, so it's not eligible).
+        (, int24 upper) = factory.oneSidedTickRange(-204199, 200, false);
+        assertEq(upper, -204200);
+    }
+
+    function test_oneSidedTickRange_floor_and_ceil_diverge_from_each_other() public view {
+        // A tick sitting mid-way between two spacing multiples: floor and
+        // ceil must land on two *different* multiples (not just "some
+        // multiple"), proving the rounding actually moved the tick rather
+        // than leaving it untouched or coincidentally landing on the same
+        // value both ways.
+        (int24 lowerToken0,) = factory.oneSidedTickRange(-204250, 200, true);
+        (, int24 upperToken1) = factory.oneSidedTickRange(-204250, 200, false);
+        assertEq(lowerToken0, -204200, "ceil(-204250) should round toward zero to -204200");
+        assertEq(upperToken1, -204400, "floor(-204250) should round away from zero to -204400");
+        assertTrue(lowerToken0 != upperToken1);
+    }
+
+    function test_oneSidedTickRange_token0_ceils_misaligned_positive_tick() public view {
+        (int24 lower,) = factory.oneSidedTickRange(204199, 200, true);
+        assertEq(lower, 204200);
+    }
+
+    function test_oneSidedTickRange_token1_floors_misaligned_positive_tick() public view {
+        (, int24 upper) = factory.oneSidedTickRange(204199, 200, false);
+        assertEq(upper, 204000);
+    }
+}
+
+// =============================================================================
+// launchToken — the atomic launch (Task 8)
+// =============================================================================
+
+/// @notice Task-8-only bridge over Task 6's `MockV3.MockPositionManager`, solving
+///         a genuine interface impedance without touching MockV3.sol (out of this
+///         task's file scope) or any production contract: `Locker.lockPosition`
+///         (Task 5, production, unchanged) calls
+///         `INonfungiblePositionManagerMinimal(positionManager).positionTokens(id)`
+///         to learn a position's token0/token1 for fee-split bookkeeping. That
+///         selector is a Task-5-only test convenience (see its own doc-comment in
+///         `INonfungiblePositionManagerMinimal.sol`) — never part of the real
+///         Uniswap ABI — and Task 6's real-ABI-shaped `MockPositionManager`
+///         doesn't implement it (nor should it; it mirrors the live contract on
+///         purpose). This subclass adds exactly the one missing selector, reading
+///         off the already-`public` `positionToken0`/`positionToken1` mappings it
+///         inherits unchanged. Flagged for a later task to reconcile Locker's
+///         production dependency on a non-standard selector against a *real*
+///         position manager (see task-8-report.md).
+contract TestPositionManager is MockPositionManager {
+    function positionTokens(uint256 tokenId) external view returns (address, address) {
+        return (positionToken0[tokenId], positionToken1[tokenId]);
+    }
+
+    /// @dev Second Task-8-only bridge: the atomic dev buy needs the swap
+    ///      router to hand over a real balance of the *same* Token that was
+    ///      just CREATE2-deployed inside this very `launchToken` call. Live
+    ///      Uniswap's pool/position-manager/router are one interconnected
+    ///      liquidity system, so the router naturally draws on the pool's
+    ///      just-seeded liquidity; Task 6's mocks split those into separate,
+    ///      disconnected contracts, and the Token doesn't exist yet to
+    ///      pre-fund a router with before the launch transaction runs.
+    ///      `sweep` is an unrestricted escape hatch (test-only, never
+    ///      deployed anywhere real) letting `TestSwapRouter` draw on the
+    ///      balance this position manager received during `mint`, standing
+    ///      in for that shared liquidity.
+    function sweep(address token, address to, uint256 amount) external {
+        IERC20(token).transfer(to, amount);
+    }
+}
+
+/// @notice Task-8-only swap router mock: implements both `exactInputSingle`
+///         overloads (mirroring Task 6's `MockRouter`, including reusing its
+///         `MockRevert` step-tagged error), but instead of paying out of its
+///         own pre-funded balance, draws the output token from
+///         `liquiditySource` via `sweep` — see `TestPositionManager`'s
+///         doc-comment for why that bridge exists.
+contract TestSwapRouter is ISwapRouter02 {
+    using SafeERC20 for IERC20;
+
+    TestPositionManager public immutable liquiditySource;
+    uint256 public fixedAmountOut;
+    bool public revertOnSwap;
+
+    constructor(TestPositionManager liquiditySource_) {
+        liquiditySource = liquiditySource_;
+    }
+
+    function setFixedAmountOut(uint256 amountOut) external {
+        fixedAmountOut = amountOut;
+    }
+
+    function setRevertOnSwap(bool value) external {
+        revertOnSwap = value;
+    }
+
+    function exactInputSingle(IV3SwapRouter.ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut)
+    {
+        amountOut = _swap(params.tokenIn, params.tokenOut, params.amountIn, params.recipient);
+    }
+
+    function exactInputSingle(ISwapRouter.ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut)
+    {
+        amountOut = _swap(params.tokenIn, params.tokenOut, params.amountIn, params.recipient);
+    }
+
+    function _swap(address tokenIn, address tokenOut, uint256 amountIn, address recipient)
+        private
+        returns (uint256 amountOut)
+    {
+        if (revertOnSwap) revert MockRevert("swap");
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
+        amountOut = fixedAmountOut;
+        if (amountOut > 0) liquiditySource.sweep(tokenOut, recipient, amountOut);
+    }
+}
+
+/// @notice One hand-verifiable numerical check on the vendored `TickMath`
+///         (see task-8-report.md for the full byte-for-byte diff against
+///         Uniswap's canonical source used to vendor it). At `tick == 0`
+///         every bit-shift branch in `getSqrtRatioAtTick` is skipped (0 has
+///         no set bits), so `ratio` never leaves its initial value of
+///         exactly `2**128`; the final `(ratio >> 32)` step is then exactly
+///         `2**96` with a zero remainder (no round-up). This is the one
+///         reference point provable by direct hand-calculation rather than
+///         by trusting a copied decimal constant.
+contract TickMathSanityTest is Test {
+    function test_tick_zero_is_price_one() public pure {
+        assertEq(TickMath.getSqrtRatioAtTick(0), uint160(2 ** 96));
+    }
+}
+
+contract LaunchFactoryLaunchTest is Test {
+    LaunchFactory factory;
+    Locker locker;
+    MockWETH weth;
+    MockV3Factory v3Factory;
+    TestPositionManager positionManager;
+    TestSwapRouter router;
+
+    address owner = address(0x0121EA);
+    address protocolWallet = address(0x9877E);
+    address deployer = address(0xD0D0D0);
+
+    uint256 constant LAUNCH_FEE = 0.0005 ether;
+    uint256 constant LAUNCH_CONFIG_ID = 0;
+    uint256 constant DEX_ID = 0;
+    uint256 constant SUPPLY = 1_000_000_000e18;
+    uint24 constant POOL_FEE = 10000;
+
+    function setUp() public {
+        weth = new MockWETH();
+        v3Factory = new MockV3Factory();
+        positionManager = new TestPositionManager();
+        router = new TestSwapRouter(positionManager);
+        router.setFixedAmountOut(1_000e18); // harmless default so any dev buy exercises the sweep bridge
+
+        // Locker's `factory` is immutable, fixed at Locker's own construction —
+        // but LaunchFactory's constructor also wants the Locker's address. Break
+        // the cycle by predicting the factory's plain-CREATE address two nonces
+        // ahead of this contract's current nonce: `new Locker(...)` below
+        // consumes the *current* nonce, so the factory (created right after)
+        // lands at current-nonce + 1.
+        address predictedFactory = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        locker = new Locker(predictedFactory, address(positionManager), owner);
+        factory = new LaunchFactory(owner, address(locker), LAUNCH_FEE, protocolWallet);
+        assertEq(address(factory), predictedFactory, "nonce prediction drifted");
+
+        LaunchFactory.LaunchConfig memory cfg = LaunchFactory.LaunchConfig({
+            pairToken: address(weth),
+            graduationThreshold: 4.2 ether,
+            initialTick: -204200,
+            supply: SUPPLY,
+            maxWalletBps: 500,
+            maxTxBps: 550,
+            restrictionBlocks: 2,
+            reservedFee: 0,
+            enabled: true,
+            routerRequiresDeadline: false
+        });
+        LaunchFactory.DexConfig memory dex = LaunchFactory.DexConfig({
+            name: "test-v3",
+            factory: address(v3Factory),
+            positionManager: address(positionManager),
+            swapRouter: address(router),
+            poolFee: POOL_FEE,
+            tickSpacing: 200,
+            enabled: true
+        });
+
+        vm.startPrank(owner);
+        factory.setLaunchConfig(LAUNCH_CONFIG_ID, cfg);
+        factory.setDexConfig(DEX_ID, dex);
+        vm.stopPrank();
+    }
+
+    function _predictNextCreate(address deployer_) internal view returns (address) {
+        return vm.computeCreateAddress(deployer_, vm.getNonce(deployer_));
+    }
+
+    function _defaultParams(address feeWallet) internal pure returns (LaunchFactory.TokenParams memory) {
+        LaunchFactory.Socials memory socials =
+            LaunchFactory.Socials({twitter: "t", telegram: "tg", discord: "d", website: "w", farcaster: "f"});
+        return LaunchFactory.TokenParams({
+            name: "Test Token",
+            symbol: "TST",
+            logo: "ipfs://logo",
+            description: "a test token",
+            socials: socials,
+            feeWallet: feeWallet
+        });
+    }
+
+    function _assertNothingPersisted(address predictedToken) internal view {
+        assertEq(predictedToken.code.length, 0, "no code should exist at the predicted address");
+        assertFalse(factory.getLaunchedToken(predictedToken).exists, "no provenance record should exist");
+    }
+
+    // -------------------------------------------------------------------
+    // Happy path
+    // -------------------------------------------------------------------
+
+    function test_launchToken_happy_path() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("happy-path");
+        uint256 devBuy = 0.01 ether;
+        uint256 value = LAUNCH_FEE + devBuy;
+        uint256 devBuyTokensOut = 777e18;
+
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+        address predictedPool = _predictNextCreate(address(v3Factory));
+        router.setFixedAmountOut(devBuyTokensOut);
+
+        vm.deal(deployer, value);
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit LaunchFactory.TokenLaunched(predictedToken, deployer, predictedPool, LAUNCH_CONFIG_ID, DEX_ID, SUPPLY, devBuy);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: value}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        assertEq(token, predictedToken, "CREATE2 deploy must land at the predicted address");
+        assertTrue(token.code.length > 0);
+
+        address pool = v3Factory.getPool(token, address(weth), POOL_FEE);
+        assertEq(pool, predictedPool);
+        assertTrue(MockPool(pool).initialized(), "pool must be initialized");
+        assertTrue(MockPool(pool).sqrtPriceX96() > 0);
+
+        LaunchFactory.LaunchedToken memory rec = factory.getLaunchedToken(token);
+        assertTrue(rec.exists);
+        assertEq(rec.token, token);
+        assertEq(rec.deployer, deployer);
+        assertEq(rec.pairedToken, address(weth));
+        assertEq(rec.positionManager, address(positionManager));
+        assertEq(rec.dexId, DEX_ID);
+        assertEq(rec.launchConfigId, LAUNCH_CONFIG_ID);
+        assertEq(rec.supply, SUPPLY);
+        assertEq(rec.poolFee, POOL_FEE);
+        assertEq(rec.initialBuyAmount, devBuy);
+        assertEq(rec.restrictionsEndBlock, Token(token).restrictionsEndBlock());
+
+        // Full supply seeded one-sided (our simplified mock lands the pulled
+        // balance on the position manager itself, minus what the dev buy
+        // then swept out to the launcher).
+        assertEq(Token(token).balanceOf(address(positionManager)), SUPPLY - devBuyTokensOut);
+
+        // LP-NFT permanently in the Locker, protocolFeeShare snapshotted.
+        assertEq(positionManager.ownerOf(rec.positionId), address(locker));
+        (bool locked,,, uint256 protocolFeeShare,,,) = locker.tokenLocks(token);
+        assertTrue(locked);
+        assertEq(protocolFeeShare, factory.PROTOCOL_FEE_SHARE());
+
+        // Protocol launch fee collected.
+        assertEq(protocolWallet.balance, LAUNCH_FEE);
+
+        // Dev buy delivered tokens to the launcher (feeWallet was zero, so
+        // launchBuyer == deployer).
+        assertEq(Token(token).balanceOf(deployer), devBuyTokensOut);
+    }
+
+    function test_launchToken_happy_path_no_dev_buy() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("no-dev-buy");
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        assertEq(factory.getLaunchedToken(token).initialBuyAmount, 0);
+        assertEq(Token(token).balanceOf(deployer), 0);
+        assertEq(Token(token).balanceOf(address(positionManager)), SUPPLY);
+        assertEq(protocolWallet.balance, LAUNCH_FEE);
+    }
+
+    function test_launchToken_honors_feeWallet_as_launchBuyer() public {
+        address feeWallet = address(0xFEE5);
+        LaunchFactory.TokenParams memory params = _defaultParams(feeWallet);
+        bytes32 salt = keccak256("fee-wallet");
+        uint256 devBuy = 0.02 ether;
+
+        router.setFixedAmountOut(50e18);
+        vm.deal(deployer, LAUNCH_FEE + devBuy);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: LAUNCH_FEE + devBuy}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        assertEq(Token(token).balanceOf(feeWallet), 50e18);
+        assertEq(Token(token).balanceOf(deployer), 0);
+
+        (, address rec_deployer, address creatorWallet,,,,) = locker.tokenLocks(token);
+        assertEq(rec_deployer, deployer);
+        assertEq(creatorWallet, feeWallet);
+    }
+
+    // -------------------------------------------------------------------
+    // Value-split validation
+    // -------------------------------------------------------------------
+
+    function test_launchToken_reverts_on_insufficient_value() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("insufficient-value");
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(FeeMath.InsufficientValue.selector);
+        factory.launchToken{value: LAUNCH_FEE - 1}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+    }
+
+    function testFuzz_launchToken_valueSplit(uint96 devBuyRaw) public {
+        uint256 devBuy = bound(uint256(devBuyRaw), 0, 5 ether);
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256(abi.encode("fuzz", devBuy));
+        uint256 value = LAUNCH_FEE + devBuy;
+
+        vm.deal(deployer, value);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: value}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        assertEq(factory.getLaunchedToken(token).initialBuyAmount, devBuy);
+        assertEq(protocolWallet.balance, LAUNCH_FEE);
+        assertEq(address(factory).balance, 0, "factory must not retain any ETH");
+    }
+
+    // -------------------------------------------------------------------
+    // canLaunch / config gating
+    // -------------------------------------------------------------------
+
+    function test_launchToken_reverts_if_canLaunch_false() public {
+        vm.prank(owner);
+        factory.setLaunchEnabled(false);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(LaunchFactory.LaunchNotAllowed.selector);
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, keccak256("gated"));
+    }
+
+    function test_launchToken_reverts_if_launchConfig_disabled() public {
+        LaunchFactory.LaunchConfig memory cfg = factory.getLaunchConfig(LAUNCH_CONFIG_ID);
+        cfg.enabled = false;
+        vm.prank(owner);
+        factory.setLaunchConfig(LAUNCH_CONFIG_ID, cfg);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(LaunchFactory.LaunchConfigDisabled.selector);
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, keccak256("cfg-disabled"));
+    }
+
+    function test_launchToken_reverts_if_dexConfig_disabled() public {
+        LaunchFactory.DexConfig memory dex = factory.getDexConfig(DEX_ID);
+        dex.enabled = false;
+        vm.prank(owner);
+        factory.setDexConfig(DEX_ID, dex);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(LaunchFactory.DexConfigDisabled.selector);
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, keccak256("dex-disabled"));
+    }
+
+    // -------------------------------------------------------------------
+    // Atomicity: a per-step mock revert must undo *everything*
+    // -------------------------------------------------------------------
+
+    function test_launchToken_atomicity_createPool_reverts() public {
+        v3Factory.setRevertOnCreatePool(true);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("atomicity-createPool");
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(MockRevert.selector, "createPool"));
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        _assertNothingPersisted(predictedToken);
+    }
+
+    function test_launchToken_atomicity_initialize_reverts() public {
+        // The pool doesn't exist until `createPool` deploys it inside this
+        // same atomic call, so it can't be pre-armed by address — arm it via
+        // the factory-level "next pool" flag instead (see
+        // `MockV3Factory.revertNextPoolOnInitialize`'s doc-comment).
+        v3Factory.setRevertNextPoolOnInitialize(true);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("atomicity-initialize");
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(MockRevert.selector, "initialize"));
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        _assertNothingPersisted(predictedToken);
+        assertEq(v3Factory.getPool(predictedToken, address(weth), POOL_FEE), address(0), "pool must not persist either");
+    }
+
+    function test_launchToken_atomicity_mint_reverts() public {
+        positionManager.setRevertOnMint(true);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("atomicity-mint");
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(MockRevert.selector, "mint"));
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        _assertNothingPersisted(predictedToken);
+    }
+
+    function test_launchToken_atomicity_lock_reverts() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("atomicity-lock");
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+
+        // Pre-mark the predicted token address as already locked, so the
+        // real launch's own `lockPosition` call hits `AlreadyLocked` — this
+        // uses only already-committed, unmodified production Locker
+        // behavior (no mock revert switch needed for this particular step).
+        vm.prank(address(factory));
+        locker.lockPosition(predictedToken, 999, deployer, deployer, 30);
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        vm.expectRevert(Locker.AlreadyLocked.selector);
+        factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        _assertNothingPersisted(predictedToken);
+    }
+
+    function test_launchToken_atomicity_devBuy_reverts() public {
+        router.setRevertOnSwap(true);
+
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        bytes32 salt = keccak256("atomicity-devbuy");
+        uint256 devBuy = 0.01 ether;
+        address predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+
+        vm.deal(deployer, LAUNCH_FEE + devBuy);
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(MockRevert.selector, "swap"));
+        factory.launchToken{value: LAUNCH_FEE + devBuy}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        // Even though pool creation, seeding, and locking all "succeeded"
+        // before the revert, the whole transaction unwinds — including the
+        // Token's CREATE2 deploy.
+        _assertNothingPersisted(predictedToken);
+        assertEq(protocolWallet.balance, 0, "fee must not have been collected either");
     }
 }

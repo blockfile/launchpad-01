@@ -39,8 +39,23 @@ contract MockV3Factory is IUniswapV3Factory {
     mapping(address => mapping(address => mapping(uint24 => address))) public pools;
     bool public revertOnCreatePool;
 
+    /// @dev Task-8 addition: a pool doesn't exist until `createPool` deploys
+    ///      it inside the same atomic `launchToken` call that then
+    ///      immediately calls `initialize` on it — so there's no address a
+    ///      test could call `MockPool.setRevertOnInitialize` on *before*
+    ///      that transaction runs. This factory-level flag is consulted at
+    ///      the moment a pool is created and passed straight into its
+    ///      constructor, letting a test arm "the next pool this factory
+    ///      creates reverts on its first `initialize`" ahead of time.
+    ///      Defaults false; every existing test/behavior is unchanged.
+    bool public revertNextPoolOnInitialize;
+
     function setRevertOnCreatePool(bool value) external {
         revertOnCreatePool = value;
+    }
+
+    function setRevertNextPoolOnInitialize(bool value) external {
+        revertNextPoolOnInitialize = value;
     }
 
     function createPool(address tokenA, address tokenB, uint24 fee) external returns (address pool) {
@@ -49,7 +64,7 @@ contract MockV3Factory is IUniswapV3Factory {
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         require(pools[token0][token1][fee] == address(0), "MockV3Factory: pool exists");
 
-        pool = address(new MockPool(token0, token1, fee));
+        pool = address(new MockPool(token0, token1, fee, revertNextPoolOnInitialize));
         pools[token0][token1][fee] = pool;
     }
 
@@ -71,10 +86,11 @@ contract MockPool is IUniswapV3Pool {
     bool public initialized;
     bool public revertOnInitialize;
 
-    constructor(address token0_, address token1_, uint24 fee_) {
+    constructor(address token0_, address token1_, uint24 fee_, bool revertOnInitialize_) {
         token0 = token0_;
         token1 = token1_;
         fee = fee_;
+        revertOnInitialize = revertOnInitialize_;
     }
 
     function setRevertOnInitialize(bool value) external {

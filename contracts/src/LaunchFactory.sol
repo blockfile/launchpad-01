@@ -2,7 +2,21 @@
 pragma solidity 0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Token} from "./Token.sol";
+import {Locker} from "./Locker.sol";
+import {FeeMath} from "./lib/FeeMath.sol";
+import {TickMath} from "./lib/TickMath.sol";
+import {
+    IUniswapV3Factory,
+    IUniswapV3Pool,
+    INonfungiblePositionManager,
+    ISwapRouter,
+    IV3SwapRouter,
+    ISwapRouter02,
+    IWETH
+} from "./interfaces/IUniswapV3.sol";
 
 /// @title LaunchFactory
 /// @notice Config storage, provenance record, and CREATE2 address prediction
@@ -22,7 +36,7 @@ import {Token} from "./Token.sol";
 ///         **deployment-time** decision (Task 10's `Deploy.s.sol` should set
 ///         `owner_` to a `TimelockController`, not an EOA), not something
 ///         this contract enforces itself.
-contract LaunchFactory is Ownable2Step {
+contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     // ---------------------------------------------------------------------
     // Structs
     // ---------------------------------------------------------------------
@@ -130,6 +144,21 @@ contract LaunchFactory is Ownable2Step {
     ///         the live-verified figure.
     uint256 public immutable launchFee;
 
+    /// @notice Destination for the collected `launchFee` on every launch.
+    ///         Immutable (Task 8 decision — mirrors `locker`/`launchFee`):
+    ///         picked over an owner-mutable setter so the protocol fee
+    ///         destination can never be silently redirected post-deploy by a
+    ///         compromised/careless owner key; a deployment that genuinely
+    ///         needs to change it redeploys the factory, same as `locker`.
+    address public immutable protocolWallet;
+
+    /// @notice The protocol's fixed share of the swap-fee split passed to
+    ///         `Locker.lockPosition` on every launch (creator keeps the
+    ///         other 70%). Matches the settled 70/30 parameter; fixed, not
+    ///         owner-adjustable, and comfortably under Locker's own
+    ///         `MAX_PROTOCOL_FEE_SHARE == 50` ceiling (checked there too).
+    uint256 public constant PROTOCOL_FEE_SHARE = 30;
+
     mapping(uint256 => LaunchConfig) private _launchConfigs;
     mapping(uint256 => DexConfig) private _dexConfigs;
     mapping(address => LaunchedToken) private _launchedTokens;
@@ -159,13 +188,41 @@ contract LaunchFactory is Ownable2Step {
     event PublicLaunchOpenSet(bool open);
     event WhitelistedLauncherSet(address indexed launcher, bool allowed);
 
+    /// @notice Our own launch-provenance event — the A -> B/C contract (see
+    ///         the design spec). Emitted once, at the very end of a
+    ///         successful `launchToken`, after every other effect has
+    ///         already landed.
+    event TokenLaunched(
+        address indexed token,
+        address indexed deployer,
+        address pool,
+        uint256 launchConfigId,
+        uint256 dexId,
+        uint256 supply,
+        uint256 initialBuyAmount
+    );
+
     error ZeroAddress();
     error Create2Failed();
+    /// @dev `canLaunch(msg.sender)` was false at the top of `launchToken`.
+    error LaunchNotAllowed();
+    /// @dev `launchConfigId` resolved to a config with `enabled == false`
+    ///      (including an unset id, which reads as the zero-valued struct).
+    error LaunchConfigDisabled();
+    /// @dev `dexId` resolved to a DEX config with `enabled == false`
+    ///      (including an unset id).
+    error DexConfigDisabled();
+    /// @dev The low-level ETH transfer of the launch fee to `protocolWallet`
+    ///      failed (e.g. `protocolWallet` is a contract with no
+    ///      payable/receive fallback). All-or-nothing: this reverts the
+    ///      entire launch rather than stranding the fee.
+    error FeeTransferFailed();
 
-    constructor(address owner_, address locker_, uint256 launchFee_) Ownable(owner_) {
-        if (locker_ == address(0)) revert ZeroAddress();
+    constructor(address owner_, address locker_, uint256 launchFee_, address protocolWallet_) Ownable(owner_) {
+        if (locker_ == address(0) || protocolWallet_ == address(0)) revert ZeroAddress();
         locker = locker_;
         launchFee = launchFee_;
+        protocolWallet = protocolWallet_;
     }
 
     // ---------------------------------------------------------------------
@@ -342,5 +399,290 @@ contract LaunchFactory is Ownable2Step {
             deployed := create2(0, add(initcode, 0x20), mload(initcode), salt)
         }
         if (deployed == address(0)) revert Create2Failed();
+    }
+
+    // ---------------------------------------------------------------------
+    // The atomic launch (Task 8)
+    // ---------------------------------------------------------------------
+
+    /// @dev Pure bookkeeping struct threading the per-launch working state
+    ///      (`config`/`dex` snapshots, the resolved `deployer`/`launchBuyer`,
+    ///      the fee/buy split, and the two id's) between `launchToken` and
+    ///      its internal helpers below. Exists purely so those helpers take
+    ///      one memory-struct argument instead of 7-8 scalars each: with
+    ///      everything passed as separate locals, `launchToken`'s own scope
+    ///      held enough simultaneously-live stack slots (function params +
+    ///      every intermediate value) to trip solc's legacy codegen with
+    ///      `Stack too deep` at more than one call site — bundling collapses
+    ///      that to one memory pointer per group. Never part of any
+    ///      external/public function signature, so it never appears in this
+    ///      contract's ABI.
+    struct LaunchContext {
+        LaunchConfig config;
+        DexConfig dex;
+        address deployer;
+        address launchBuyer;
+        uint256 launchConfigId;
+        uint256 dexId;
+        uint256 fee;
+        uint256 buyAmount;
+    }
+
+    /// @notice Deploys a fixed-supply `Token`, creates and one-sided-seeds
+    ///         its Uniswap V3 pool with the entire supply, permanently locks
+    ///         the LP position in `locker`, records authoritative
+    ///         provenance, collects the protocol launch fee, and (if the
+    ///         caller sent more than `launchFee`) executes the creator's
+    ///         atomic dev buy — all in one all-or-nothing transaction.
+    ///
+    ///         `nonReentrant` guards the whole call; every side effect below
+    ///         is ordered checks-effects-interactions (config/gate checks ->
+    ///         CREATE2 deploy -> pool creation/seed/lock -> the
+    ///         `LaunchedToken` record write -> the two remaining external
+    ///         value transfers) so that a revert at *any* step — whether
+    ///         from this contract's own checks or from an externally
+    ///         supplied DEX address behaving unexpectedly — unwinds
+    ///         everything: no deployed Token, no created pool, no minted
+    ///         position, no written record, no moved value. See
+    ///         `test/LaunchFactory.t.sol`'s per-step revert matrix.
+    /// @param params Caller-supplied token metadata + dev-buy recipient
+    ///        override (see `TokenParams`).
+    /// @param launchConfigId Selects the snapshotted `LaunchConfig` (supply,
+    ///        anti-snipe caps, initial tick, ...).
+    /// @param dexId Selects the snapshotted `DexConfig` (which Uniswap-V3-
+    ///        shaped venue to launch on).
+    /// @param salt The CREATE2 salt; the deployed Token's address is
+    ///        whatever `predictTokenAddress(params, launchConfigId, dexId,
+    ///        salt, msg.sender)` returns.
+    /// @return token The address of the newly deployed Token.
+    function launchToken(TokenParams calldata params, uint256 launchConfigId, uint256 dexId, bytes32 salt)
+        external
+        payable
+        nonReentrant
+        returns (address token)
+    {
+        if (!canLaunch(msg.sender)) revert LaunchNotAllowed();
+
+        LaunchContext memory ctx = _buildLaunchContext(params, launchConfigId, dexId);
+
+        // --- CREATE2-deploy the Token at the predicted address ---
+        bytes memory initcode = _buildTokenInitcode(params, ctx.config, ctx.deployer);
+        address predicted = _computeCreate2Address(salt, keccak256(initcode));
+        token = _deploy(salt, initcode);
+        // Sanity per the brief: `_deploy` (raw create2 opcode) and
+        // `_computeCreate2Address` (manual keccak256 formula) are
+        // independent implementations of the same CREATE2 semantics
+        // (Task 7's cross-check tests already prove they agree) — this can
+        // never actually diverge, so `assert` (not a user-facing revert) is
+        // the right tool: it flags an invariant break, not an expected
+        // failure mode.
+        assert(token == predicted);
+
+        // --- Create + initialize the pool, seed it one-sided, lock the LP-NFT ---
+        (address pool, uint256 positionId, bool isToken0) = _createPoolAndSeed(token, ctx);
+
+        // --- Write the authoritative provenance record ---
+        _recordLaunch(token, positionId, isToken0, ctx);
+
+        // --- Collect the protocol launch fee ---
+        (bool sent,) = protocolWallet.call{value: ctx.fee}("");
+        if (!sent) revert FeeTransferFailed();
+
+        // --- Optional atomic dev buy ---
+        // `amountOutMinimum = 0` is a reviewed decision, not an oversight:
+        // there is no external price reference for a token at the moment of
+        // its own birth, so a slippage bound here would be theater.
+        if (ctx.buyAmount > 0) {
+            _executeDevBuy(token, ctx);
+        }
+
+        emit TokenLaunched(token, ctx.deployer, pool, launchConfigId, dexId, ctx.config.supply, ctx.buyAmount);
+    }
+
+    /// @dev Loads + validates the `LaunchConfig`/`DexConfig` snapshots,
+    ///      splits `msg.value`, and resolves `deployer`/`launchBuyer` into a
+    ///      single `LaunchContext`. Split out of `launchToken` purely for
+    ///      stack depth (see `LaunchContext`'s doc-comment).
+    function _buildLaunchContext(TokenParams calldata params, uint256 launchConfigId, uint256 dexId)
+        internal
+        view
+        returns (LaunchContext memory ctx)
+    {
+        ctx.config = _launchConfigs[launchConfigId];
+        ctx.dex = _dexConfigs[dexId];
+        if (!ctx.config.enabled) revert LaunchConfigDisabled();
+        if (!ctx.dex.enabled) revert DexConfigDisabled();
+
+        // `buyAmount` IS `msg.value - launchFee` by construction — there is
+        // no separate caller-declared "initialBuyAmount" to cross-check
+        // against; a caller who wants no dev buy simply sends exactly
+        // `launchFee`. `splitValue` reverts `InsufficientValue` for
+        // `msg.value < launchFee`.
+        (ctx.fee, ctx.buyAmount) = FeeMath.splitValue(msg.value, launchFee);
+
+        ctx.deployer = msg.sender;
+        ctx.launchBuyer = params.feeWallet != address(0) ? params.feeWallet : ctx.deployer;
+        ctx.launchConfigId = launchConfigId;
+        ctx.dexId = dexId;
+    }
+
+    /// @dev Creates + initializes the Uniswap V3 pool at
+    ///      `ctx.config.initialTick`, wires it into the just-deployed
+    ///      `token` via `initPool`, seeds it one-sided with the entire
+    ///      supply (approve + mint, LP-NFT minted straight to the Locker),
+    ///      and locks the position. Split out of `launchToken` purely for
+    ///      stack depth (see `LaunchContext`'s doc-comment); carries no
+    ///      independent meaning outside that single call site.
+    function _createPoolAndSeed(address token, LaunchContext memory ctx)
+        internal
+        returns (address pool, uint256 positionId, bool isToken0)
+    {
+        isToken0 = token < ctx.config.pairToken;
+        (address token0, address token1) = isToken0 ? (token, ctx.config.pairToken) : (ctx.config.pairToken, token);
+        pool = IUniswapV3Factory(ctx.dex.factory).createPool(token0, token1, ctx.dex.poolFee);
+        IUniswapV3Pool(pool).initialize(TickMath.getSqrtRatioAtTick(ctx.config.initialTick));
+        Token(token).initPool(pool);
+
+        (int24 tickLower, int24 tickUpper) = _oneSidedTickRange(ctx.config.initialTick, ctx.dex.tickSpacing, isToken0);
+        uint256 amount0Desired = isToken0 ? ctx.config.supply : 0;
+        uint256 amount1Desired = isToken0 ? 0 : ctx.config.supply;
+
+        IERC20(token).approve(ctx.dex.positionManager, ctx.config.supply);
+        (positionId,,,) = INonfungiblePositionManager(ctx.dex.positionManager).mint(
+            INonfungiblePositionManager.MintParams({
+                token0: token0,
+                token1: token1,
+                fee: ctx.dex.poolFee,
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                amount0Desired: amount0Desired,
+                amount1Desired: amount1Desired,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: locker,
+                deadline: block.timestamp
+            })
+        );
+
+        // creatorWallet mirrors launchBuyer's derivation exactly (same
+        // params.feeWallet-or-deployer rule) — see the brief.
+        Locker(locker).lockPosition(token, positionId, ctx.deployer, ctx.launchBuyer, PROTOCOL_FEE_SHARE);
+    }
+
+    /// @dev Writes the authoritative `LaunchedToken` provenance record. Split
+    ///      out of `launchToken` purely for stack depth (see
+    ///      `LaunchContext`'s doc-comment).
+    function _recordLaunch(address token, uint256 positionId, bool isToken0, LaunchContext memory ctx) internal {
+        _launchedTokens[token] = LaunchedToken({
+            token: token,
+            deployer: ctx.deployer,
+            pairedToken: ctx.config.pairToken,
+            positionManager: ctx.dex.positionManager,
+            positionId: positionId,
+            dexId: ctx.dexId,
+            launchConfigId: ctx.launchConfigId,
+            restrictionsEndBlock: Token(token).restrictionsEndBlock(),
+            supply: ctx.config.supply,
+            isToken0: isToken0,
+            poolFee: ctx.dex.poolFee,
+            exists: true,
+            initialBuyAmount: ctx.buyAmount
+        });
+    }
+
+    /// @dev Executes the atomic dev buy: wraps `ctx.buyAmount` ETH to the
+    ///      config's paired asset (WETH) and swaps it for `token` via
+    ///      `ctx.dex.swapRouter`, delivering the output to
+    ///      `ctx.launchBuyer`. `amountOutMinimum = 0` throughout (see
+    ///      `launchToken`'s doc-comment on why). Router ABI shape
+    ///      (with/without a `deadline` field) is selected per
+    ///      `ctx.config.routerRequiresDeadline`, matching `LaunchConfig`'s
+    ///      documented purpose for that field. Split out of `launchToken`
+    ///      purely for stack depth (see `LaunchContext`'s doc-comment).
+    function _executeDevBuy(address token, LaunchContext memory ctx) internal {
+        IWETH(ctx.config.pairToken).deposit{value: ctx.buyAmount}();
+        IERC20(ctx.config.pairToken).approve(ctx.dex.swapRouter, ctx.buyAmount);
+
+        if (ctx.config.routerRequiresDeadline) {
+            ISwapRouter02(ctx.dex.swapRouter).exactInputSingle(
+                ISwapRouter.ExactInputSingleParams({
+                    tokenIn: ctx.config.pairToken,
+                    tokenOut: token,
+                    fee: ctx.dex.poolFee,
+                    recipient: ctx.launchBuyer,
+                    deadline: block.timestamp,
+                    amountIn: ctx.buyAmount,
+                    amountOutMinimum: 0,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+        } else {
+            ISwapRouter02(ctx.dex.swapRouter).exactInputSingle(
+                IV3SwapRouter.ExactInputSingleParams({
+                    tokenIn: ctx.config.pairToken,
+                    tokenOut: token,
+                    fee: ctx.dex.poolFee,
+                    recipient: ctx.launchBuyer,
+                    amountIn: ctx.buyAmount,
+                    amountOutMinimum: 0,
+                    sqrtPriceLimitX96: 0
+                })
+            );
+        }
+    }
+
+    /// @dev Computes the `[tickLower, tickUpper]` range for a one-sided
+    ///      position holding the ENTIRE new-token supply and zero of the
+    ///      paired asset, opened at `initialTick`. In Uniswap V3 a position
+    ///      is 100% token0 while the pool's current tick <= tickLower (price
+    ///      hasn't reached the lower bound yet) and 100% token1 while
+    ///      current tick >= tickUpper. So:
+    ///        - new token is token0: pin `tickLower` to the (ceiling-
+    ///          aligned) `initialTick` and open `tickUpper` all the way to
+    ///          the max usable tick — buys push price up through the whole
+    ///          range, draining token0 (the new token) for token1 (the
+    ///          paired asset).
+    ///        - new token is token1: the mirror image — `tickUpper` pinned
+    ///          to the floor-aligned `initialTick`, `tickLower` at the min
+    ///          usable tick.
+    ///      Ticks are aligned to `tickSpacing` (ceiling for the token0 case,
+    ///      floor for the token1 case) so the range stays valid even if an
+    ///      admin-set `initialTick` isn't already a multiple of
+    ///      `tickSpacing` — defensive: a misaligned literal would otherwise
+    ///      revert the whole launch inside the position manager's `mint`.
+    function _oneSidedTickRange(int24 initialTick, int24 tickSpacing, bool tokenIsToken0)
+        internal
+        pure
+        returns (int24 tickLower, int24 tickUpper)
+    {
+        int24 minUsable = (TickMath.MIN_TICK / tickSpacing) * tickSpacing;
+        int24 maxUsable = (TickMath.MAX_TICK / tickSpacing) * tickSpacing;
+        if (tokenIsToken0) {
+            tickLower = _ceilToSpacing(initialTick, tickSpacing);
+            tickUpper = maxUsable;
+        } else {
+            tickLower = minUsable;
+            tickUpper = _floorToSpacing(initialTick, tickSpacing);
+        }
+    }
+
+    /// @dev Rounds `tick` down to the nearest multiple of `tickSpacing`
+    ///      (toward -infinity). Solidity's `/` truncates toward zero, which
+    ///      already equals `floor()` for `tick >= 0`; the `tick < 0` branch
+    ///      corrects the one case where truncation-toward-zero rounds the
+    ///      wrong way.
+    function _floorToSpacing(int24 tick, int24 tickSpacing) internal pure returns (int24) {
+        int24 quotient = tick / tickSpacing;
+        if (tick < 0 && tick % tickSpacing != 0) quotient -= 1;
+        return quotient * tickSpacing;
+    }
+
+    /// @dev Rounds `tick` up to the nearest multiple of `tickSpacing`
+    ///      (toward +infinity) — the mirror-image correction of
+    ///      `_floorToSpacing`.
+    function _ceilToSpacing(int24 tick, int24 tickSpacing) internal pure returns (int24) {
+        int24 quotient = tick / tickSpacing;
+        if (tick > 0 && tick % tickSpacing != 0) quotient += 1;
+        return quotient * tickSpacing;
     }
 }
