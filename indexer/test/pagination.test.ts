@@ -10,6 +10,8 @@ describe("cursor encode/decode", () => {
   it("treats a garbage cursor as undefined rather than throwing", () => {
     expect(decodeCursor("not-valid-base64!!!")).toBeUndefined();
   });
+  it("treats a non-object cursor payload as undefined", () =>
+    expect(decodeCursor(Buffer.from("5", "utf8").toString("base64url"))).toBeUndefined());
 });
 
 describe("clampLimit", () => {

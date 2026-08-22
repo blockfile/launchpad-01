@@ -18,6 +18,7 @@ export interface TokenSummaryRow {
   logo: string;
   lastPrice18: bigint | null;
   supply: bigint;
+  decimals: number;
   holderCount: number;
   launchTimestamp: bigint;
 }
@@ -29,13 +30,19 @@ export function toSummary(row: TokenSummaryRow) {
     symbol: row.symbol,
     logo: row.logo,
     price: row.lastPrice18 !== null ? formatPrice18(row.lastPrice18) : null,
-    // marketCap = price × supply / 1e18, formatted the same way price18 is —
-    // null pre-first-trade for the same reason `price` is null then. This is
-    // the field C's Explore page (frontend spec §2.1) lists as a required
+    // marketCap = price × supply / 10^decimals, formatted the same way price18
+    // is — null pre-first-trade for the same reason `price` is null then. This
+    // is the field C's Explore page (frontend spec §2.1) lists as a required
     // column that B's original draft omitted; agreed-contract addition, not
     // a denormalized column (computed here at read time from lastPrice18).
+    // Divides by the token's own `decimals`, not a hardcoded 1e18 — every
+    // launch token is 18-decimal today, but `supply` is a raw integer in the
+    // token's native decimals, so hardcoding would silently misprice any
+    // future non-18-decimal token instead of following its actual decimals.
     marketCap:
-      row.lastPrice18 !== null ? formatPrice18((row.lastPrice18 * row.supply) / 10n ** 18n) : null,
+      row.lastPrice18 !== null
+        ? formatPrice18((row.lastPrice18 * row.supply) / 10n ** BigInt(row.decimals))
+        : null,
     holderCount: row.holderCount,
     launchTimestamp: row.launchTimestamp.toString(),
   };
