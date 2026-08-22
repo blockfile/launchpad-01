@@ -139,6 +139,35 @@ contract TokenCapTest is Test {
         fresh.initPool(pool);
     }
 
+    // --- Isolate the maxTx clause from the maxWallet clause ------------
+    // Elsewhere in this suite maxTxBps(550) > maxWalletBps(500), so any
+    // value > maxTx also has balanceOf(to)+value > maxWallet: the maxWallet
+    // clause always fires first and the maxTx comparison is mathematically
+    // subsumed (never independently exercised — a regression isolated to
+    // just the maxTx clause would go undetected). Deploy a token with
+    // maxTxBps < maxWalletBps so a value between the two thresholds can
+    // ONLY revert via the maxTx clause.
+    function test_capBlock_maxTx_clause_isolated_from_maxWallet() public {
+        Token.Socials memory s = Token.Socials("t", "tg", "d", "w", "f");
+        Token.TokenMeta memory m = Token.TokenMeta("Name", "SYM", "ipfs://logo", "desc", s);
+        // maxTxBps=300 -> maxTx=30_000_000e18; maxWalletBps=500 -> maxWallet=50_000_000e18
+        Token t2 = new Token(m, SUPPLY, address(this), address(0), 2, 500, 300, address(0));
+        t2.initPool(pool);
+        t2.transfer(pool, SUPPLY);
+        vm.roll(block.number + 1); // launchBlock + 1: capped window
+
+        // 40M > maxTx(30M) but 0+40M <= maxWallet(50M) for a fresh recipient:
+        // this can ONLY revert via the maxTx clause.
+        vm.prank(pool);
+        vm.expectRevert(Token.CapExceeded.selector);
+        t2.transfer(alice, 40_000_000e18);
+
+        // 25M <= maxTx(30M) and <= maxWallet(50M): passes.
+        vm.prank(pool);
+        t2.transfer(alice, 25_000_000e18);
+        assertEq(t2.balanceOf(alice), 25_000_000e18);
+    }
+
     // --- Fuzz: in-window pool->fresh-holder buy reverts iff over either cap
 
     function testFuzz_capBlock_reverts_iff_over_limits(uint256 amount) public {
