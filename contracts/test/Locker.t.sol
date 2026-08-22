@@ -70,6 +70,7 @@ contract LockerTest is Test {
     // Task 5 does not require it to be a real Token.sol instance.
     address launchedToken = address(0x70CE1000001);
     uint256 constant POSITION_ID = 1;
+    uint256 constant PROTOCOL_FEE_SHARE = 30; // creatorShare = 70
 
     function setUp() public {
         token0 = new MockERC20("Token0", "TK0");
@@ -87,25 +88,39 @@ contract LockerTest is Test {
         token1.mint(address(pm), 1_000e18);
     }
 
-    /// Simulates the real two-hop call chain (deployer EOA -> Factory ->
-    /// Locker): msg.sender as seen by the Locker is the factory (satisfies
-    /// onlyFactory), while tx.origin is the deployer wallet that Locker
-    /// records as the token's deployer/initial creatorWallet. See the
-    /// doc-comment on `Locker.lockPosition` for why this is safe here (the
-    /// Factory is the only, trusted, single-hop caller onlyFactory permits).
+    /// Simulates the real launch flow: the factory (the only onlyFactory
+    /// caller) transfers the LP-NFT to the Locker, then calls `lockPosition`
+    /// passing the deployer/creatorWallet/protocolFeeShare it already knows
+    /// explicitly (no tx.origin inference — see the doc-comment on
+    /// `Locker.lockPosition` for why that was replaced).
     function _transferNftAndLock() internal {
         vm.prank(factory);
         pm.safeTransferFrom(factory, address(locker), POSITION_ID);
 
-        vm.prank(factory, deployer);
-        locker.lockPosition(launchedToken, POSITION_ID);
+        vm.prank(factory);
+        locker.lockPosition(launchedToken, POSITION_ID, deployer, deployer, PROTOCOL_FEE_SHARE);
     }
 
     // --- 1. onlyFactory ---------------------------------------------------
 
     function test_lockPosition_reverts_if_not_factory() public {
         vm.expectRevert(Locker.NotFactory.selector);
-        locker.lockPosition(launchedToken, POSITION_ID);
+        locker.lockPosition(launchedToken, POSITION_ID, deployer, deployer, PROTOCOL_FEE_SHARE);
+    }
+
+    function test_lockPosition_reverts_on_double_lock() public {
+        _transferNftAndLock();
+
+        vm.prank(factory);
+        vm.expectRevert(Locker.AlreadyLocked.selector);
+        locker.lockPosition(launchedToken, POSITION_ID, deployer, deployer, PROTOCOL_FEE_SHARE);
+    }
+
+    function test_lockPosition_reverts_if_protocolFeeShare_exceeds_max() public {
+        uint256 tooHigh = locker.MAX_PROTOCOL_FEE_SHARE() + 1; // 51
+        vm.prank(factory);
+        vm.expectRevert(Locker.FeeShareTooHigh.selector);
+        locker.lockPosition(launchedToken, POSITION_ID, deployer, deployer, tooHigh);
     }
 
     // --- 2. custody + no exit path -----------------------------------------
@@ -119,8 +134,8 @@ contract LockerTest is Test {
             locker.tokenLocks(launchedToken);
         assertTrue(locked);
         assertEq(rec_deployer, deployer);
-        assertEq(creatorWallet, deployer); // defaults to the deployer until redirected
-        assertEq(protocolFeeShare, 30);
+        assertEq(creatorWallet, deployer); // set to the deployer by this test's helper, until redirected
+        assertEq(protocolFeeShare, PROTOCOL_FEE_SHARE);
     }
 
     function test_no_selector_moves_the_position_out() public {

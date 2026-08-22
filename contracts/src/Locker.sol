@@ -43,13 +43,6 @@ contract Locker is Ownable2Step, ERC721Holder {
     ///         ERC721 contract and the `collect()` periphery contract).
     address public immutable positionManager;
 
-    /// @notice Current default protocol fee share (out of 100), snapshotted
-    ///         into a token's `TokenLock.protocolFeeShare` at lock time.
-    ///         Owner-adjustable (bounded by `MAX_PROTOCOL_FEE_SHARE`) for
-    ///         future launches; changing it never retroactively affects an
-    ///         already-locked token.
-    uint256 public protocolFeeShare = 30;
-
     /// @notice Owner-controlled destination for the protocol's share of
     ///         collected fees. Defaults to the initial owner.
     address public protocolWallet;
@@ -61,7 +54,8 @@ contract Locker is Ownable2Step, ERC721Holder {
         ///      may call `setFeeRedirect` for the token.
         address deployer;
         /// @dev Where the creator's share of collected fees is paid;
-        ///      defaults to `deployer`, redirectable via `setFeeRedirect`.
+        ///      set at lock time by the factory, redirectable thereafter
+        ///      only by `deployer` via `setFeeRedirect`.
         address creatorWallet;
         /// @dev Snapshotted from `protocolFeeShare` at lock time.
         uint256 protocolFeeShare;
@@ -95,7 +89,6 @@ contract Locker is Ownable2Step, ERC721Holder {
     );
     event FeeRedirectSet(address indexed token, address indexed wallet);
     event FeeCollectorSet(address indexed collector, bool allowed);
-    event ProtocolFeeShareSet(uint256 share);
     event ProtocolWalletSet(address wallet);
 
     modifier onlyFactory() {
@@ -113,37 +106,52 @@ contract Locker is Ownable2Step, ERC721Holder {
     /// @notice Records the fee-split policy for `token` and marks its
     ///         position (`positionId`) as locked. Callable only by `factory`.
     ///
-    ///         `deployer` is taken from `tx.origin`, not a function argument
-    ///         (the interface is fixed to `(token, positionId)`) and not
-    ///         `msg.sender` (which is always `factory` here, per
-    ///         `onlyFactory` — recording that would make the factory contract
-    ///         itself the only address ever able to call `setFeeRedirect`,
-    ///         defeating the point of a deployer-controlled redirect). Using
-    ///         `tx.origin` for "who is the human behind this call" is a
-    ///         well-known footgun in general because it also authenticates
-    ///         through *untrusted* intermediate contracts. It is safe in this
-    ///         one, specific spot: `onlyFactory` guarantees the only possible
-    ///         call chain reaching here is `EOA -> factory -> Locker`, and
-    ///         `factory` is this same repo's trusted, non-upgradeable launch
-    ///         entrypoint — not a third-party or arbitrary contract — so
-    ///         `tx.origin` can only ever be the wallet that actually
-    ///         initiated the launch.
+    ///         `deployer`, `creatorWallet`, and `protocolFeeShare` are all
+    ///         supplied explicitly by the caller (the factory), not inferred.
+    ///         An earlier version of this function derived `deployer` from
+    ///         `tx.origin` (reasoning: `onlyFactory` means the only call
+    ///         chain reaching here is `EOA -> factory -> Locker`, so
+    ///         `tx.origin` is "safe" here). That reasoning breaks the moment
+    ///         the launch is submitted on the user's behalf rather than
+    ///         directly by their EOA — a Safe/multisig, an ERC-4337 account,
+    ///         or any gasless/relayed flow — because `tx.origin` is always
+    ///         the top-level transaction signer (a relayer/bundler/paymaster),
+    ///         never the smart-contract wallet that actually asked to launch.
+    ///         That would silently record the wrong `deployer` and, since
+    ///         locking is permanent with no rescue path, permanently lock the
+    ///         real creator out of `setFeeRedirect` with no way to fix it.
+    ///         Requiring the factory to pass `deployer`/`creatorWallet`
+    ///         explicitly removes that failure mode entirely: the factory is
+    ///         the one place that already knows who actually requested the
+    ///         launch, regardless of transaction plumbing.
+    ///
+    ///         Similarly, `protocolFeeShare` is now the value snapshotted
+    ///         directly from this call's argument (bounds-checked against
+    ///         `MAX_PROTOCOL_FEE_SHARE`), not a mutable global default — the
+    ///         factory decides the policy per launch.
     ///
     ///         Custody of the LP-NFT itself is taken separately: `factory`
     ///         calls `positionManager.safeTransferFrom(factory, address(this),
     ///         positionId)` itself (this contract just needs to accept it via
     ///         `ERC721Holder`); `lockPosition` only does the bookkeeping.
-    function lockPosition(address token, uint256 positionId) external onlyFactory {
+    function lockPosition(
+        address token,
+        uint256 positionId,
+        address deployer,
+        address creatorWallet,
+        uint256 protocolFeeShare
+    ) external onlyFactory {
         if (tokenLocks[token].locked) revert AlreadyLocked();
+        if (deployer == address(0) || creatorWallet == address(0)) revert ZeroAddress();
+        if (protocolFeeShare > MAX_PROTOCOL_FEE_SHARE) revert FeeShareTooHigh();
 
-        address deployer = tx.origin;
         (address token0, address token1) =
             INonfungiblePositionManagerMinimal(positionManager).positionTokens(positionId);
 
         tokenLocks[token] = TokenLock({
             locked: true,
             deployer: deployer,
-            creatorWallet: deployer,
+            creatorWallet: creatorWallet,
             protocolFeeShare: protocolFeeShare,
             positionId: positionId,
             token0: token0,
@@ -206,14 +214,6 @@ contract Locker is Ownable2Step, ERC721Holder {
     function setFeeCollector(address collector, bool allowed) external onlyOwner {
         feeCollectors[collector] = allowed;
         emit FeeCollectorSet(collector, allowed);
-    }
-
-    /// @notice Sets the default protocol fee share (out of 100) used for
-    ///         future locks. Never affects already-locked tokens.
-    function setProtocolFeeShare(uint256 share) external onlyOwner {
-        if (share > MAX_PROTOCOL_FEE_SHARE) revert FeeShareTooHigh();
-        protocolFeeShare = share;
-        emit ProtocolFeeShareSet(share);
     }
 
     /// @notice Sets the destination wallet for the protocol's share of
