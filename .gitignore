@@ -5,3 +5,6 @@ contracts/broadcast/
 .env
 dist/
 *.tsbuildinfo
+
+# SDD/workflow scratch (ledgers, briefs, review diffs)
+.superpowers/
