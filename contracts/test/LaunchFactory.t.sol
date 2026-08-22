@@ -406,27 +406,20 @@ contract LaunchFactoryTest is Test {
 // launchToken — the atomic launch (Task 8)
 // =============================================================================
 
-/// @notice Task-8-only bridge over Task 6's `MockV3.MockPositionManager`, solving
-///         a genuine interface impedance without touching MockV3.sol (out of this
-///         task's file scope) or any production contract: `Locker.lockPosition`
-///         (Task 5, production, unchanged) calls
-///         `INonfungiblePositionManagerMinimal(positionManager).positionTokens(id)`
-///         to learn a position's token0/token1 for fee-split bookkeeping. That
-///         selector is a Task-5-only test convenience (see its own doc-comment in
-///         `INonfungiblePositionManagerMinimal.sol`) — never part of the real
-///         Uniswap ABI — and Task 6's real-ABI-shaped `MockPositionManager`
-///         doesn't implement it (nor should it; it mirrors the live contract on
-///         purpose). This subclass adds exactly the one missing selector, reading
-///         off the already-`public` `positionToken0`/`positionToken1` mappings it
-///         inherits unchanged. Flagged for a later task to reconcile Locker's
-///         production dependency on a non-standard selector against a *real*
-///         position manager (see task-8-report.md).
+/// @notice Task-8-only extension of Task 6's `MockV3.MockPositionManager`.
+///         Previously added a non-standard `positionTokens` selector here to
+///         work around `Locker.lockPosition` calling it — that was WRONG
+///         (a critical review finding): the real NonfungiblePositionManager
+///         has no `positionTokens`, so every real launch's `lockPosition`
+///         call would have reverted. Fixed at the source instead:
+///         `Locker.lockPosition` and `INonfungiblePositionManagerMinimal`
+///         now use the real `positions(uint256)` 12-tuple, and
+///         `MockV3.MockPositionManager` itself now implements `positions()`
+///         (a real, correctly-shaped ABI method, not a workaround) — so this
+///         subclass no longer needs any positionTokens-style shim at all.
+///         Only the dev-buy liquidity bridge below remains.
 contract TestPositionManager is MockPositionManager {
-    function positionTokens(uint256 tokenId) external view returns (address, address) {
-        return (positionToken0[tokenId], positionToken1[tokenId]);
-    }
-
-    /// @dev Second Task-8-only bridge: the atomic dev buy needs the swap
+    /// @dev Task-8-only bridge: the atomic dev buy needs the swap
     ///      router to hand over a real balance of the *same* Token that was
     ///      just CREATE2-deployed inside this very `launchToken` call. Live
     ///      Uniswap's pool/position-manager/router are one interconnected
@@ -527,6 +520,8 @@ contract LaunchFactoryLaunchTest is Test {
     uint256 constant DEX_ID = 0;
     uint256 constant SUPPLY = 1_000_000_000e18;
     uint24 constant POOL_FEE = 10000;
+    int24 constant INITIAL_TICK = -204200;
+    int24 constant TICK_SPACING = 200;
 
     function setUp() public {
         weth = new MockWETH();
@@ -549,7 +544,7 @@ contract LaunchFactoryLaunchTest is Test {
         LaunchFactory.LaunchConfig memory cfg = LaunchFactory.LaunchConfig({
             pairToken: address(weth),
             graduationThreshold: 4.2 ether,
-            initialTick: -204200,
+            initialTick: INITIAL_TICK,
             supply: SUPPLY,
             maxWalletBps: 500,
             maxTxBps: 550,
@@ -564,7 +559,7 @@ contract LaunchFactoryLaunchTest is Test {
             positionManager: address(positionManager),
             swapRouter: address(router),
             poolFee: POOL_FEE,
-            tickSpacing: 200,
+            tickSpacing: TICK_SPACING,
             enabled: true
         });
 
@@ -688,6 +683,90 @@ contract LaunchFactoryLaunchTest is Test {
         (, address rec_deployer, address creatorWallet,,,,) = locker.tokenLocks(token);
         assertEq(rec_deployer, deployer);
         assertEq(creatorWallet, feeWallet);
+    }
+
+    // -------------------------------------------------------------------
+    // Pool opening price must be correct regardless of token/WETH sort
+    // order (coordinator review, critical): `config.initialTick` is
+    // authored assuming the new token is token0. When it sorts as token1
+    // instead, the raw tick must be negated before `initialize`, or the
+    // pool opens at the *reciprocal* price (~1e9x wrong here) with nothing
+    // reverting to catch it.
+    // -------------------------------------------------------------------
+
+    /// @dev CREATE2 addresses are effectively pseudorandom relative to a
+    ///      fixed WETH address, so neither sort order is reachable by
+    ///      picking one fixed salt — grind salts until the predicted token
+    ///      address lands on the wanted side of `weth`.
+    function _findSaltForOrdering(LaunchFactory.TokenParams memory params, bool wantIsToken0)
+        internal
+        view
+        returns (bytes32 salt, address predictedToken)
+    {
+        for (uint256 i = 0; i < 2000; i++) {
+            salt = keccak256(abi.encode("ordering-search", i));
+            predictedToken = factory.predictTokenAddress(params, LAUNCH_CONFIG_ID, DEX_ID, salt, deployer);
+            bool isToken0 = predictedToken < address(weth);
+            if (isToken0 == wantIsToken0) return (salt, predictedToken);
+        }
+        revert("no salt found for the wanted ordering within the search bound");
+    }
+
+    function test_launchToken_initializes_pool_at_raw_tick_when_token_is_token0() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        (bytes32 salt, address predictedToken) = _findSaltForOrdering(params, true);
+        assertTrue(predictedToken < address(weth), "sanity: token must sort as token0 here");
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+        assertEq(token, predictedToken);
+
+        address pool = v3Factory.getPool(token, address(weth), POOL_FEE);
+        assertEq(
+            MockPool(pool).sqrtPriceX96(),
+            TickMath.getSqrtRatioAtTick(INITIAL_TICK),
+            "token0 case: pool must open at the raw (unnegated) configured tick"
+        );
+    }
+
+    function test_launchToken_initializes_pool_at_negated_tick_when_token_is_token1() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        (bytes32 salt, address predictedToken) = _findSaltForOrdering(params, false);
+        assertTrue(predictedToken > address(weth), "sanity: token must sort as token1 here");
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+        assertEq(token, predictedToken);
+
+        address pool = v3Factory.getPool(token, address(weth), POOL_FEE);
+        assertEq(
+            MockPool(pool).sqrtPriceX96(),
+            TickMath.getSqrtRatioAtTick(-INITIAL_TICK),
+            "token1 case: pool must open at the NEGATED configured tick, not the raw one"
+        );
+        // Extra guard against the exact regression: the raw (un-negated)
+        // tick's price must NOT be what actually got used.
+        assertTrue(MockPool(pool).sqrtPriceX96() != TickMath.getSqrtRatioAtTick(INITIAL_TICK));
+    }
+
+    /// @dev The one-sided seed range must be built around the pool's ACTUAL
+    ///      price (post sort-order correction), not the raw config tick —
+    ///      otherwise the range and the price it's meant to sit outside of
+    ///      would disagree whenever the token sorts as token1. Checked here
+    ///      by confirming the full supply still lands one-sided (zero
+    ///      dev-buy sweep, so the position manager must hold the entire
+    ///      supply) even in the token1 ordering.
+    function test_launchToken_one_sided_seed_still_full_supply_when_token_is_token1() public {
+        LaunchFactory.TokenParams memory params = _defaultParams(address(0));
+        (bytes32 salt,) = _findSaltForOrdering(params, false);
+
+        vm.deal(deployer, LAUNCH_FEE);
+        vm.prank(deployer);
+        address token = factory.launchToken{value: LAUNCH_FEE}(params, LAUNCH_CONFIG_ID, DEX_ID, salt);
+
+        assertEq(Token(token).balanceOf(address(positionManager)), SUPPLY);
     }
 
     // -------------------------------------------------------------------

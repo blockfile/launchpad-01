@@ -145,8 +145,13 @@ contract Locker is Ownable2Step, ERC721Holder {
         if (deployer == address(0) || creatorWallet == address(0)) revert ZeroAddress();
         if (protocolFeeShare > MAX_PROTOCOL_FEE_SHARE) revert FeeShareTooHigh();
 
-        (address token0, address token1) =
-            INonfungiblePositionManagerMinimal(positionManager).positionTokens(positionId);
+        // The real Uniswap V3 `positions()` 12-tuple; token0/token1 live at
+        // indices 2/3 (fixed, per the coordinator's Task 8 review — an
+        // earlier version called a non-standard `positionTokens` selector
+        // that the real position manager doesn't implement, which would
+        // have reverted every real launch).
+        (,, address token0, address token1,,,,,,,,) =
+            INonfungiblePositionManagerMinimal(positionManager).positions(positionId);
 
         tokenLocks[token] = TokenLock({
             locked: true,

@@ -195,6 +195,44 @@ contract MockPositionManager is ERC721, INonfungiblePositionManager {
         if (amount0 > 0 && t0 != address(0)) IERC20(t0).safeTransfer(params.recipient, amount0);
         if (amount1 > 0 && t1 != address(0)) IERC20(t1).safeTransfer(params.recipient, amount1);
     }
+
+    /// @dev The real Uniswap V3 `positions()` 12-tuple (Task 8 coordinator
+    ///      fix: `Locker.lockPosition` now decodes token0/token1 from here,
+    ///      matching the real position manager's actual ABI instead of an
+    ///      invented `positionTokens` selector). Every field besides
+    ///      token0/token1 is a zero-valued placeholder — this mock only
+    ///      tracks what `mint` stored per position.
+    function positions(uint256 tokenId)
+        external
+        view
+        returns (
+            uint96 nonce,
+            address operator,
+            address token0,
+            address token1,
+            uint24 fee,
+            int24 tickLower,
+            int24 tickUpper,
+            uint128 liquidity,
+            uint256 feeGrowthInside0LastX128,
+            uint256 feeGrowthInside1LastX128,
+            uint128 tokensOwed0,
+            uint128 tokensOwed1
+        )
+    {
+        nonce = 0;
+        operator = address(0);
+        token0 = positionToken0[tokenId];
+        token1 = positionToken1[tokenId];
+        fee = 0;
+        tickLower = 0;
+        tickUpper = 0;
+        liquidity = 0;
+        feeGrowthInside0LastX128 = 0;
+        feeGrowthInside1LastX128 = 0;
+        tokensOwed0 = 0;
+        tokensOwed1 = 0;
+    }
 }
 
 /// @notice Stands in for SwapRouter02, implementing both `exactInputSingle`

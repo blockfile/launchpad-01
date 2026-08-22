@@ -20,7 +20,7 @@ contract MockERC20 is ERC20 {
 /// Stands in for Uniswap V3's NonfungiblePositionManager: it IS the ERC721
 /// holding the LP-NFT (mirroring the real contract, which is both the NFT
 /// and the periphery position manager at one address) and implements the
-/// minimal `collect`/`positionTokens` slice the Locker consumes. `collect`
+/// minimal `collect`/`positions` slice the Locker consumes. `collect`
 /// pays out fixed, test-configured amounts (pre-funded into this contract)
 /// so the split can be asserted deterministically.
 contract MockPositionManager is ERC721, INonfungiblePositionManagerMinimal {
@@ -43,8 +43,29 @@ contract MockPositionManager is ERC721, INonfungiblePositionManagerMinimal {
         fixedAmount1 = amount1;
     }
 
-    function positionTokens(uint256) external view returns (address, address) {
-        return (token0, token1);
+    /// @dev The real Uniswap V3 `positions()` 12-tuple (Task 8 coordinator
+    ///      fix). Return values are left unnamed to avoid shadowing this
+    ///      contract's own `token0`/`token1` immutables, which are returned
+    ///      directly at indices 2/3; every other field is a zero placeholder.
+    function positions(uint256)
+        external
+        view
+        returns (
+            uint96,
+            address,
+            address,
+            address,
+            uint24,
+            int24,
+            int24,
+            uint128,
+            uint256,
+            uint256,
+            uint128,
+            uint128
+        )
+    {
+        return (0, address(0), token0, token1, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     function collect(CollectParams calldata params) external returns (uint256 amount0, uint256 amount1) {

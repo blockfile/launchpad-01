@@ -526,13 +526,14 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
         ctx.dexId = dexId;
     }
 
-    /// @dev Creates + initializes the Uniswap V3 pool at
-    ///      `ctx.config.initialTick`, wires it into the just-deployed
-    ///      `token` via `initPool`, seeds it one-sided with the entire
-    ///      supply (approve + mint, LP-NFT minted straight to the Locker),
-    ///      and locks the position. Split out of `launchToken` purely for
-    ///      stack depth (see `LaunchContext`'s doc-comment); carries no
-    ///      independent meaning outside that single call site.
+    /// @dev Creates + initializes the Uniswap V3 pool at the price
+    ///      `ctx.config.initialTick` encodes (negated when the new token
+    ///      sorts as token1 — see the in-body comment), wires it into the
+    ///      just-deployed `token` via `initPool`, seeds it one-sided with
+    ///      the entire supply (approve + mint, LP-NFT minted straight to the
+    ///      Locker), and locks the position. Split out of `launchToken`
+    ///      purely for stack depth (see `LaunchContext`'s doc-comment);
+    ///      carries no independent meaning outside that single call site.
     function _createPoolAndSeed(address token, LaunchContext memory ctx)
         internal
         returns (address pool, uint256 positionId, bool isToken0)
@@ -540,10 +541,26 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
         isToken0 = token < ctx.config.pairToken;
         (address token0, address token1) = isToken0 ? (token, ctx.config.pairToken) : (ctx.config.pairToken, token);
         pool = IUniswapV3Factory(ctx.dex.factory).createPool(token0, token1, ctx.dex.poolFee);
-        IUniswapV3Pool(pool).initialize(TickMath.getSqrtRatioAtTick(ctx.config.initialTick));
+
+        // Uniswap's price convention is token1/token0. `config.initialTick`
+        // is authored assuming the new token is token0 and the paired asset
+        // (WETH) is token1 — a rising tick means the new token is getting
+        // *more expensive* in the paired asset, the intended pons-v1-style
+        // reading. Token/WETH sort order is CREATE2-address-dependent and
+        // not knowable at config time, so when the new token instead sorts
+        // *after* the paired asset (isToken0 == false, paired asset is
+        // token0), the pool's token1/token0 price would silently become
+        // pairedAsset/newToken — the reciprocal of what was intended — unless
+        // corrected: 1.0001^(-initialTick) == 1 / 1.0001^initialTick. Fixing
+        // this bug (caught in review): negate the tick in that case, and
+        // feed the SAME corrected tick into `_oneSidedTickRange` below so
+        // the one-sided range is built around the pool's actual price, not
+        // the raw config value.
+        int24 initTick = isToken0 ? ctx.config.initialTick : -ctx.config.initialTick;
+        IUniswapV3Pool(pool).initialize(TickMath.getSqrtRatioAtTick(initTick));
         Token(token).initPool(pool);
 
-        (int24 tickLower, int24 tickUpper) = _oneSidedTickRange(ctx.config.initialTick, ctx.dex.tickSpacing, isToken0);
+        (int24 tickLower, int24 tickUpper) = _oneSidedTickRange(initTick, ctx.dex.tickSpacing, isToken0);
         uint256 amount0Desired = isToken0 ? ctx.config.supply : 0;
         uint256 amount1Desired = isToken0 ? 0 : ctx.config.supply;
 
