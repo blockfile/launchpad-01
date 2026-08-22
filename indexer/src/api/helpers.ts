@@ -7,6 +7,12 @@ export function parseSort(raw: string | undefined): Sort {
   return (SORTS as readonly string[]).includes(raw ?? "") ? (raw as Sort) : "newest";
 }
 
+const VALID_INTERVALS = new Set(["1m", "5m", "1h", "1d"]);
+export type Interval = "1m" | "5m" | "1h" | "1d";
+export function parseInterval(raw: string | undefined): Interval | undefined {
+  return raw && VALID_INTERVALS.has(raw) ? (raw as Interval) : undefined;
+}
+
 /** Structural row shape `toSummary` needs — deliberately not `typeof
  * tokens.$inferSelect` (that type only exists via the `ponder:schema` virtual
  * module). Any object with at least these fields satisfies it, including the

@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte, lt, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "ponder:api";
-import { candles, tokens } from "ponder:schema";
-import { parseSort, toSummary } from "./helpers";
+import { candles, holders, tokens, trades } from "ponder:schema";
+import { parseInterval, parseSort, toSummary } from "./helpers";
 import { clampLimit, decodeCursor, encodeCursor } from "../lib/pagination";
+import { formatPrice18 } from "../lib/price";
 import { priceChangeBps } from "../lib/stats";
 
 async function attach24hStats(rows: (typeof tokens.$inferSelect)[]) {
@@ -103,6 +104,139 @@ app.get("/tokens", async (c) => {
   const nextCursor = hasMore && last ? encodeCursor({ v: cursorValueFor(last), a: last.address }) : null;
 
   return c.json({ items: await attach24hStats(page), nextCursor });
+});
+
+app.get("/tokens/:address", async (c) => {
+  const address = c.req.param("address").toLowerCase() as `0x${string}`;
+  const [row] = await db.select().from(tokens).where(eq(tokens.address, address)).limit(1);
+  if (!row) return c.json({ error: "not found" }, 404);
+  return c.json({
+    ...toSummary(row),
+    deployer: row.deployer,
+    poolAddress: row.poolAddress,
+    pairedToken: row.pairedToken,
+    poolFee: row.poolFee,
+    dexId: row.dexId.toString(),
+    launchConfigId: row.launchConfigId.toString(),
+    supply: row.supply.toString(),
+    restrictionsEndBlock: row.restrictionsEndBlock.toString(),
+    graduationThreshold: row.graduationThreshold.toString(),
+    graduationThresholdNote: "inert in v1 — never surfaced as a progress bar",
+    description: row.description,
+    socials: row.socials,
+  });
+});
+
+app.get("/tokens/:address/candles", async (c) => {
+  const address = c.req.param("address").toLowerCase() as `0x${string}`;
+  const interval = parseInterval(c.req.query("interval"));
+  if (!interval) return c.json({ error: "interval must be one of 1m,5m,1h,1d" }, 400);
+  const conditions = [eq(candles.tokenAddress, address), eq(candles.interval, interval)];
+  const from = c.req.query("from");
+  const to = c.req.query("to");
+  if (from) conditions.push(gte(candles.bucketStart, BigInt(from)));
+  if (to) conditions.push(lte(candles.bucketStart, BigInt(to)));
+
+  const rows = await db.select().from(candles).where(and(...conditions)).orderBy(asc(candles.bucketStart));
+  return c.json({
+    interval,
+    items: rows.map((r) => ({
+      bucketStart: r.bucketStart.toString(),
+      open: formatPrice18(r.open),
+      high: formatPrice18(r.high),
+      low: formatPrice18(r.low),
+      close: formatPrice18(r.close),
+      volumeToken: r.volumeToken.toString(),
+      volumeQuote: r.volumeQuote.toString(),
+      tradeCount: r.tradeCount,
+    })),
+  });
+});
+
+// Compound keyset cursor: order is (blockNumber DESC, logIndex DESC), and on
+// this chain contract-visible `block.number` ticks only ~every 16s, so trades
+// routinely cluster many-per-block. A single-column `lt(blockNumber, v)`
+// cursor would drop every trade tied with the cursor's blockNumber once they
+// straddle a page boundary — see Task 7's `/tokens` cursorCondition note for
+// the general shape of this bug. logIndex is a Postgres integer (JS number).
+app.get("/tokens/:address/trades", async (c) => {
+  const address = c.req.param("address").toLowerCase() as `0x${string}`;
+  const limit = clampLimit(c.req.query("limit"));
+  const cursor = decodeCursor(c.req.query("cursor"));
+  const where = !cursor
+    ? eq(trades.tokenAddress, address)
+    : and(
+        eq(trades.tokenAddress, address),
+        or(
+          lt(trades.blockNumber, BigInt(cursor.v)),
+          and(eq(trades.blockNumber, BigInt(cursor.v)), lt(trades.logIndex, Number(cursor.l))),
+        ),
+      );
+
+  const rows = await db.select().from(trades).where(where).orderBy(desc(trades.blockNumber), desc(trades.logIndex)).limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  const nextCursor = hasMore && last ? encodeCursor({ v: String(last.blockNumber), l: String(last.logIndex) }) : null; // always present, never omitted — see /tokens' note above
+  return c.json({
+    items: page.map((r) => ({
+      txHash: r.txHash,
+      logIndex: r.logIndex,
+      side: r.side,
+      traderAddress: r.traderAddress,
+      tokenAmountRaw: r.tokenAmountRaw.toString(),
+      quoteAmountRaw: r.quoteAmountRaw.toString(),
+      price: formatPrice18(r.price18),
+      blockTimestamp: r.blockTimestamp.toString(),
+    })),
+    nextCursor,
+  });
+});
+
+// Compound keyset cursor: order is (balance DESC, holderAddress DESC), and
+// balances can tie (same reasoning as /trades above) — a single-column
+// `lt(balance, v)` cursor would drop every holder tied with the cursor's
+// balance once they straddle a page boundary.
+app.get("/tokens/:address/holders", async (c) => {
+  const address = c.req.param("address").toLowerCase() as `0x${string}`;
+  const limit = clampLimit(c.req.query("limit"));
+  const cursor = decodeCursor(c.req.query("cursor"));
+  const where = !cursor
+    ? eq(holders.tokenAddress, address)
+    : and(
+        eq(holders.tokenAddress, address),
+        or(
+          lt(holders.balance, BigInt(cursor.v)),
+          and(eq(holders.balance, BigInt(cursor.v)), lt(holders.holderAddress, cursor.a as `0x${string}`)),
+        ),
+      );
+
+  // `supply`/`holderCount` are one extra row lookup against the already-
+  // denormalized `tokens` columns — not a new aggregation query — used to
+  // compute each holder's `pct` and the page's `totalHolders` (C's zod
+  // schema wants both; both are cheap given data already on hand).
+  const [token] = await db.select({ supply: tokens.supply, holderCount: tokens.holderCount }).from(tokens).where(eq(tokens.address, address)).limit(1);
+  const rows = await db.select().from(holders).where(where).orderBy(desc(holders.balance), desc(holders.holderAddress)).limit(limit + 1);
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  const nextCursor = hasMore && last ? encodeCursor({ v: String(last.balance), a: last.holderAddress }) : null; // always present, never omitted
+  const supply = token?.supply ?? 0n;
+  return c.json({
+    items: page.map((r) => ({
+      address: r.holderAddress,
+      balance: r.balance.toString(),
+      pct: supply > 0n ? Number((r.balance * 1_000_000n) / supply) / 10_000 : 0,
+    })),
+    nextCursor,
+    totalHolders: token?.holderCount ?? 0,
+  });
+});
+
+app.get("/tokens/:address/holders/count", async (c) => {
+  const address = c.req.param("address").toLowerCase() as `0x${string}`;
+  const [row] = await db.select({ holderCount: tokens.holderCount }).from(tokens).where(eq(tokens.address, address)).limit(1);
+  return c.json({ count: row?.holderCount ?? 0 });
 });
 
 export default app;
