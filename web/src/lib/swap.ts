@@ -28,9 +28,31 @@ if (!exactInputSingleNoDeadline) {
   );
 }
 
+// The SECOND (legacy SwapRouter) overload: same fields PLUS a `deadline`, so 8
+// components. Selected by the same structural rule (independent of array
+// order) and pinned in isolation, so the with-deadline write path — used only
+// by a token whose `routerRequiresDeadline` is true — can never be
+// mis-resolved to the no-deadline shape (which would shift every field).
+const exactInputSingleWithDeadline = (swapRouter02Abi as readonly AbiFunction[]).find(
+  (item) =>
+    item.type === "function" &&
+    item.name === "exactInputSingle" &&
+    item.inputs.length === 1 &&
+    item.inputs[0].type === "tuple" &&
+    (item.inputs[0] as { components?: readonly unknown[] }).components?.length === 8,
+);
+if (!exactInputSingleWithDeadline) {
+  throw new Error(
+    "swapRouter02Abi is missing the with-deadline exactInputSingle (8-field) overload — cannot build a deadline swap safely.",
+  );
+}
+
 /** A single-item ABI pinned to the no-deadline `exactInputSingle` overload.
  * Exported so the write path (and its tests) encode against exactly this. */
 export const exactInputSingleAbi = [exactInputSingleNoDeadline] as unknown as Abi;
+
+/** A single-item ABI pinned to the 8-field with-deadline overload. */
+export const exactInputSingleWithDeadlineAbi = [exactInputSingleWithDeadline] as unknown as Abi;
 
 /** The 7-field `exactInputSingle` params, in the exact struct-field order the
  * live router expects (no `deadline`). */
@@ -44,12 +66,50 @@ export interface ExactInputSingleParams {
   sqrtPriceLimitX96: bigint;
 }
 
-/** The exact object `writeContract` needs for a BUY. */
+/** The 8-field with-deadline params — `deadline` slots between `recipient` and
+ * `amountIn`, exactly as the legacy SwapRouter overload declares it. */
+export interface ExactInputSingleParamsWithDeadline {
+  tokenIn: `0x${string}`;
+  tokenOut: `0x${string}`;
+  fee: number;
+  recipient: `0x${string}`;
+  deadline: bigint;
+  amountIn: bigint;
+  amountOutMinimum: bigint;
+  sqrtPriceLimitX96: bigint;
+}
+
+/** Encodes one exactInputSingle leg against the shape the token's router wants:
+ * the 8-field with-deadline overload when `deadline` is supplied, else the live
+ * 7-field no-deadline overload. Kept in one place so BUY and the SELL multicall
+ * leg pick the overload identically. */
+function encodeExactInputSingle(
+  base: ExactInputSingleParams,
+  deadline: bigint | undefined,
+): { abi: Abi; args: readonly [ExactInputSingleParams | ExactInputSingleParamsWithDeadline] } {
+  if (deadline !== undefined) {
+    const params: ExactInputSingleParamsWithDeadline = {
+      tokenIn: base.tokenIn,
+      tokenOut: base.tokenOut,
+      fee: base.fee,
+      recipient: base.recipient,
+      deadline,
+      amountIn: base.amountIn,
+      amountOutMinimum: base.amountOutMinimum,
+      sqrtPriceLimitX96: base.sqrtPriceLimitX96,
+    };
+    return { abi: exactInputSingleWithDeadlineAbi, args: [params] };
+  }
+  return { abi: exactInputSingleAbi, args: [base] };
+}
+
+/** The exact object `writeContract` needs for a BUY. `args` carries whichever
+ * overload shape was selected (7- or 8-field). */
 export interface BuyCall {
   address: `0x${string}`;
   abi: Abi;
   functionName: "exactInputSingle";
-  args: readonly [ExactInputSingleParams];
+  args: readonly [ExactInputSingleParams | ExactInputSingleParamsWithDeadline];
   value: bigint;
 }
 
@@ -68,6 +128,10 @@ export interface SellCall {
  * wraps it — no separate deposit). `amountOutMinimum` is the caller's REAL,
  * slippage-floored minimum (never 0 on the live path — enforced by the panel);
  * this builder passes it through verbatim. `sqrtPriceLimitX96 = 0` (no limit).
+ *
+ * `deadline` is OPTIONAL: omit it (the live default) for the no-deadline
+ * 7-field overload; pass a far-future unix timestamp for a token whose
+ * `routerRequiresDeadline` is true, which selects the 8-field overload.
  */
 export function buildBuyCall(args: {
   router: `0x${string}`;
@@ -77,8 +141,9 @@ export function buildBuyCall(args: {
   recipient: `0x${string}`;
   amountIn: bigint;
   minAmountOut: bigint;
+  deadline?: bigint;
 }): BuyCall {
-  const params: ExactInputSingleParams = {
+  const base: ExactInputSingleParams = {
     tokenIn: args.weth,
     tokenOut: args.token,
     fee: args.poolFee,
@@ -87,11 +152,12 @@ export function buildBuyCall(args: {
     amountOutMinimum: args.minAmountOut,
     sqrtPriceLimitX96: 0n,
   };
+  const { abi, args: callArgs } = encodeExactInputSingle(base, args.deadline);
   return {
     address: args.router,
-    abi: exactInputSingleAbi,
+    abi,
     functionName: "exactInputSingle",
-    args: [params],
+    args: callArgs,
     // Native value IS the WETH input; equals amountIn exactly (no leftover to
     // refund).
     value: args.amountIn,
@@ -119,8 +185,9 @@ export function buildSellCall(args: {
   seller: `0x${string}`;
   amountIn: bigint;
   minAmountOut: bigint;
+  deadline?: bigint;
 }): SellCall {
-  const swapParams: ExactInputSingleParams = {
+  const swapBase: ExactInputSingleParams = {
     tokenIn: args.token,
     tokenOut: args.weth,
     fee: args.poolFee,
@@ -129,10 +196,11 @@ export function buildSellCall(args: {
     amountOutMinimum: args.minAmountOut,
     sqrtPriceLimitX96: 0n,
   };
+  const swap = encodeExactInputSingle(swapBase, args.deadline);
   const swapCalldata = encodeFunctionData({
-    abi: exactInputSingleAbi,
+    abi: swap.abi,
     functionName: "exactInputSingle",
-    args: [swapParams],
+    args: swap.args,
   });
   const unwrapCalldata = encodeFunctionData({
     abi: swapRouter02Abi,

@@ -125,3 +125,72 @@ describe("buildSellCall", () => {
     expect(unwrap.recipient).toBe(USER);
   });
 });
+
+// --- With-deadline overload (routerRequiresDeadline === true) --------------
+// A token whose router wants the 8-field legacy shape passes a `deadline`; the
+// builders must then select the WITH-deadline overload (selector 0x414bf389),
+// never the live no-deadline one — the wrong overload would shift `deadline`
+// into `amountIn` on-chain and move funds against a garbage min-out.
+describe("buildBuyCall / buildSellCall with a deadline", () => {
+  const DEADLINE = 1_900_000_000n;
+
+  it("BUY selects the 8-field with-deadline overload and carries the deadline through", () => {
+    const call = buildBuyCall({
+      router: ROUTER,
+      weth: WETH,
+      token: TOKEN,
+      poolFee: 10_000,
+      recipient: USER,
+      amountIn: 1000n,
+      minAmountOut: 900n,
+      deadline: DEADLINE,
+    });
+    // The whole call encodes to the with-deadline selector.
+    expect(selectorOf(call)).toBe(WITH_DEADLINE_SELECTOR);
+    expect(selectorOf(call)).not.toBe(NO_DEADLINE_SELECTOR);
+    // Decoding against the full ABI (selector-driven) confirms the deadline
+    // landed in its own field and amountIn is still amountIn.
+    const decoded = decodeFunctionData({ abi: swapRouter02Abi, data: encodeFunctionData({ abi: call.abi, functionName: "exactInputSingle", args: call.args }) });
+    const params = decoded.args[0] as { deadline: bigint; amountIn: bigint; amountOutMinimum: bigint };
+    expect(params.deadline).toBe(DEADLINE);
+    expect(params.amountIn).toBe(1000n);
+    expect(params.amountOutMinimum).toBe(900n);
+    // The native value is still exactly amountIn.
+    expect(call.value).toBe(1000n);
+  });
+
+  it("SELL's swap leg selects the with-deadline overload while the unwrap leg is unchanged", () => {
+    const call = buildSellCall({
+      router: ROUTER,
+      weth: WETH,
+      token: TOKEN,
+      poolFee: 10_000,
+      seller: USER,
+      amountIn: 500n,
+      minAmountOut: 480n,
+      deadline: DEADLINE,
+    });
+    expect(call.args[0][0].slice(0, 10)).toBe(WITH_DEADLINE_SELECTOR);
+    const decoded = decodeFunctionData({ abi: swapRouter02Abi, data: call.args[0][0] });
+    const params = decoded.args[0] as { deadline: bigint; recipient: `0x${string}`; amountIn: bigint };
+    expect(params.deadline).toBe(DEADLINE);
+    expect(params.recipient).toBe(ROUTER); // still the router itself, never address(0)
+    expect(params.amountIn).toBe(500n);
+    // The unwrap leg is untouched by the deadline.
+    const unwrap = decodeUnwrapWETH9(call.args[0][1]);
+    expect(unwrap.recipient).toBe(USER);
+  });
+
+  it("omitting the deadline keeps the live no-deadline overload (regression guard)", () => {
+    const buy = buildBuyCall({
+      router: ROUTER,
+      weth: WETH,
+      token: TOKEN,
+      poolFee: 10_000,
+      recipient: USER,
+      amountIn: 1000n,
+      minAmountOut: 900n,
+    });
+    expect(selectorOf(buy)).toBe(NO_DEADLINE_SELECTOR);
+  });
+});

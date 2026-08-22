@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useParams } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
 import { fetchToken, fetchCandles, fetchTrades, fetchHolders } from "../lib/indexer/client";
 import { PriceChart } from "../components/PriceChart";
 import { TradePanel } from "../components/TradePanel";
 import { formatAge, shortAddress } from "../lib/format";
+import { safeImageSrc, safeLinkHref } from "../lib/safeUrl";
 
 type Timeframe = "1m" | "5m" | "1h" | "1d";
 type Tab = "trades" | "holders";
@@ -44,19 +45,42 @@ export default function Trade() {
     queryFn: () => fetchCandles(address!, timeframe),
     enabled: Boolean(address),
   });
-  const tradesQuery = useQuery({
+  const tradesQuery = useInfiniteQuery({
     queryKey: ["trades", address],
-    queryFn: () => fetchTrades(address!),
+    queryFn: ({ pageParam }) => fetchTrades(address!, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(address),
   });
-  const holdersQuery = useQuery({
+  const holdersQuery = useInfiniteQuery({
     queryKey: ["holders", address],
-    queryFn: () => fetchHolders(address!),
+    queryFn: ({ pageParam }) => fetchHolders(address!, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: Boolean(address),
   });
 
+  const trades = tradesQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const holders = holdersQuery.data?.pages.flatMap((page) => page.items) ?? [];
+
   const token = tokenQuery.data;
   const socials = token?.socials;
+  // Socials are attacker-set (anyone can `launchToken`): only render an anchor
+  // for a value that survives the `https:`/`ipfs:` allow-list — a
+  // `javascript:`/`data:`/blank value yields no link at all.
+  const socialLinks: Array<[string, string]> = socials
+    ? (
+        [
+          ["Twitter", socials.twitter],
+          ["Telegram", socials.telegram],
+          ["Discord", socials.discord],
+          ["Website", socials.website],
+          ["Farcaster", socials.farcaster],
+        ] as Array<[string, string]>
+      )
+        .map(([label, raw]) => [label, safeLinkHref(raw)] as [string, string | null])
+        .filter((entry): entry is [string, string] => entry[1] !== null)
+    : [];
 
   return (
     <div className="grid grid-cols-1 gap-6 p-6 text-slate-100 lg:grid-cols-[2fr_1fr]">
@@ -67,7 +91,7 @@ export default function Trade() {
         {token && (
           <div className="mb-4">
             <div className="flex items-center gap-3">
-              <img src={token.logo} alt="" className="h-10 w-10 rounded-full" />
+              <img src={safeImageSrc(token.logo)} alt="" className="h-10 w-10 rounded-full" />
               <div>
                 <h1 className="text-xl font-semibold">{token.name}</h1>
                 <div className="text-slate-400">{token.symbol}</div>
@@ -78,13 +102,13 @@ export default function Trade() {
               </div>
             </div>
             <p className="mt-2 text-sm text-slate-400">{token.description}</p>
-            {socials && (
+            {socialLinks.length > 0 && (
               <div className="mt-2 flex gap-3 text-sm text-slate-400">
-                {socials.twitter && <a href={socials.twitter}>Twitter</a>}
-                {socials.telegram && <a href={socials.telegram}>Telegram</a>}
-                {socials.discord && <a href={socials.discord}>Discord</a>}
-                {socials.website && <a href={socials.website}>Website</a>}
-                {socials.farcaster && <a href={socials.farcaster}>Farcaster</a>}
+                {socialLinks.map(([label, href]) => (
+                  <a key={label} href={href} target="_blank" rel="noopener noreferrer nofollow">
+                    {label}
+                  </a>
+                ))}
               </div>
             )}
           </div>
@@ -132,49 +156,77 @@ export default function Trade() {
           </div>
 
           {tab === "trades" && (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="pb-2 font-normal">Side</th>
-                  <th className="pb-2 font-normal">Trader</th>
-                  <th className="pb-2 font-normal">Price</th>
-                  <th className="pb-2 font-normal">Age</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(tradesQuery.data?.items ?? []).map((trade) => (
-                  <tr key={`${trade.txHash}-${trade.logIndex}`}>
-                    <td className={trade.side === "buy" ? "text-emerald-400" : "text-rose-400"}>
-                      {trade.side}
-                    </td>
-                    <td>{shortAddress(trade.traderAddress)}</td>
-                    <td>{formatDecimalString(trade.price)}</td>
-                    <td>{formatAge(Number(trade.blockTimestamp))}</td>
+            <>
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="text-slate-400">
+                    <th className="pb-2 font-normal">Side</th>
+                    <th className="pb-2 font-normal">Trader</th>
+                    <th className="pb-2 font-normal">Price</th>
+                    <th className="pb-2 font-normal">Age</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {trades.map((trade) => (
+                    <tr key={`${trade.txHash}-${trade.logIndex}`}>
+                      <td className={trade.side === "buy" ? "text-emerald-400" : "text-rose-400"}>
+                        {trade.side}
+                      </td>
+                      <td>{shortAddress(trade.traderAddress)}</td>
+                      <td>{formatDecimalString(trade.price)}</td>
+                      <td>{formatAge(Number(trade.blockTimestamp))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {tradesQuery.hasNextPage && (
+                <div className="mt-3 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => void tradesQuery.fetchNextPage()}
+                    disabled={tradesQuery.isFetchingNextPage}
+                    className="rounded border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-40"
+                  >
+                    {tradesQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {tab === "holders" && (
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="text-slate-400">
-                  <th className="pb-2 font-normal">Holder</th>
-                  <th className="pb-2 font-normal">Balance</th>
-                  <th className="pb-2 font-normal">% supply</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(holdersQuery.data?.items ?? []).map((holder) => (
-                  <tr key={holder.address}>
-                    <td>{shortAddress(holder.address)}</td>
-                    <td>{formatDecimalString(holder.balance)}</td>
-                    <td>{formatSharePct(holder.pct)}</td>
+            <>
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="text-slate-400">
+                    <th className="pb-2 font-normal">Holder</th>
+                    <th className="pb-2 font-normal">Balance</th>
+                    <th className="pb-2 font-normal">% supply</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {holders.map((holder) => (
+                    <tr key={holder.address}>
+                      <td>{shortAddress(holder.address)}</td>
+                      <td>{formatDecimalString(holder.balance)}</td>
+                      <td>{formatSharePct(holder.pct)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {holdersQuery.hasNextPage && (
+                <div className="mt-3 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => void holdersQuery.fetchNextPage()}
+                    disabled={holdersQuery.isFetchingNextPage}
+                    className="rounded border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:border-slate-500 disabled:opacity-40"
+                  >
+                    {holdersQuery.isFetchingNextPage ? "Loading…" : "Load more"}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

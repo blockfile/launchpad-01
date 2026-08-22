@@ -1,11 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useAccount, useReadContract } from "wagmi";
 import { formatEther } from "viem";
 import { tokenAbi } from "@launchpad/shared";
 import { fetchHoldings } from "../lib/indexer/client";
 import { shortAddress } from "../lib/format";
+import { safeImageSrc } from "../lib/safeUrl";
 
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
@@ -80,11 +81,14 @@ export default function Portfolio() {
   const [manualInput, setManualInput] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["holdings", address],
-    queryFn: () => fetchHoldings(address!),
-    enabled: Boolean(address),
-  });
+  const { data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteQuery({
+      queryKey: ["holdings", address],
+      queryFn: ({ pageParam }) => fetchHoldings(address!, pageParam),
+      initialPageParam: undefined as string | undefined,
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+      enabled: Boolean(address),
+    });
 
   function handleAddManual(event: FormEvent) {
     event.preventDefault();
@@ -107,7 +111,7 @@ export default function Portfolio() {
     );
   }
 
-  const items = data?.items ?? [];
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
   const hasRows = items.length > 0 || manualTokens.length > 0;
 
   return (
@@ -133,7 +137,7 @@ export default function Portfolio() {
               <tr key={item.tokenAddress}>
                 <td className="py-2">
                   <Link to={`/token/${item.tokenAddress}`} className="flex items-center gap-2">
-                    <img src={item.logo} alt="" className="h-6 w-6 rounded-full" />
+                    <img src={safeImageSrc(item.logo)} alt="" className="h-6 w-6 rounded-full" />
                     <div>
                       <div>{item.name}</div>
                       <div className="text-slate-500">{item.symbol}</div>
@@ -149,6 +153,19 @@ export default function Portfolio() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {!isLoading && !isError && hasNextPage && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={() => void fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-40"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        </div>
       )}
 
       <form onSubmit={handleAddManual} className="mt-6 flex items-end gap-2">

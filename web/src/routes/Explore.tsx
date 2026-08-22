@@ -1,9 +1,10 @@
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { fetchTokens, search } from "../lib/indexer/client";
 import type { SearchResults } from "../lib/indexer/schema";
 import { formatAge, formatPct } from "../lib/format";
+import { safeImageSrc } from "../lib/safeUrl";
 
 // Reconciled against B's real `/tokens` capability (indexer/src/api/helpers.ts
 // `parseSort`), which only accepts `newest|price|holders` — anything else
@@ -30,10 +31,14 @@ export default function Explore() {
   const [query, setQuery] = useState("");
   const [searchItems, setSearchItems] = useState<SearchResults["items"]>([]);
 
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["tokens", sort],
-    queryFn: () => fetchTokens({ sort }),
-  });
+  const { data, isLoading, isError, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteQuery({
+      queryKey: ["tokens", sort],
+      queryFn: ({ pageParam }) => fetchTokens({ sort, cursor: pageParam }),
+      initialPageParam: undefined as string | undefined,
+      // `nextCursor` is `string | null`; null ⇒ last page ⇒ no more pages.
+      getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    });
 
   // Global ⌘K / Ctrl+K shortcut opens the search box; Escape closes it.
   useEffect(() => {
@@ -64,7 +69,8 @@ export default function Explore() {
     };
   }, [searchOpen, query]);
 
-  const items = data?.items ?? [];
+  // Flatten every loaded page into one row list; `Load more` appends the next.
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
 
   // An `<a>`/`<Link>` cannot legally wrap a `<tr>` (invalid HTML, misrenders
   // in a real browser) — the row itself is the click/keyboard target instead,
@@ -108,7 +114,7 @@ export default function Explore() {
               {searchItems.map((item) => (
                 <li key={item.address}>
                   <Link to={`/token/${item.address}`} className="flex items-center gap-2 py-2">
-                    <img src={item.logo} alt="" className="h-5 w-5 rounded-full" />
+                    <img src={safeImageSrc(item.logo)} alt="" className="h-5 w-5 rounded-full" />
                     <span>{item.name}</span>
                     <span className="text-slate-500">{item.symbol}</span>
                   </Link>
@@ -161,7 +167,7 @@ export default function Explore() {
               >
                 <td className="py-2">
                   <div className="flex items-center gap-2">
-                    <img src={item.logo} alt="" className="h-6 w-6 rounded-full" />
+                    <img src={safeImageSrc(item.logo)} alt="" className="h-6 w-6 rounded-full" />
                     <div>
                       <div>{item.name}</div>
                       <div className="text-slate-500">{item.symbol}</div>
@@ -180,6 +186,19 @@ export default function Explore() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {!isLoading && !isError && hasNextPage && (
+        <div className="mt-4 flex justify-center">
+          <button
+            type="button"
+            onClick={() => void fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-40"
+          >
+            {isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        </div>
       )}
     </div>
   );

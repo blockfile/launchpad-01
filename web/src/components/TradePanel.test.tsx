@@ -18,6 +18,10 @@ const h = vi.hoisted(() => {
   return {
     FACTORY: addr("f0"),
     DEX_FACTORY: addr("da"),
+    // The token's OWN per-dexId router (getDexConfig.swapRouter) — DISTINCT
+    // from anything resolveAddress returns, so a test can prove the swap path
+    // targets THIS router, never a chain-wide default.
+    SWAP_ROUTER: addr("55"),
     POOL: addr("c0"),
     PAIRED: addr("ee"),
     TOKEN: addr("70"),
@@ -29,6 +33,7 @@ const h = vi.hoisted(() => {
     restrictionsEndBlock: 1000n,
     exists: true,
     isToken0: true,
+    routerRequiresDeadline: false,
     // slot0: sqrtPriceX96 = 2 * 2^96 ⇒ price = 4 (token1 per token0)
     slot0: [2n * Q96, 0, 0, 0, 0, 0, true] as const,
     refetch: vi.fn(),
@@ -57,6 +62,7 @@ vi.mock("wagmi", () => ({
             deployer: h.account,
             pairedToken: h.PAIRED,
             dexId: 0n,
+            launchConfigId: 0n,
             restrictionsEndBlock: h.restrictionsEndBlock,
             isToken0: h.isToken0,
             poolFee: 10_000,
@@ -64,7 +70,9 @@ vi.mock("wagmi", () => ({
           },
         };
       case "getDexConfig":
-        return { ...base, data: { factory: h.DEX_FACTORY } };
+        return { ...base, data: { factory: h.DEX_FACTORY, swapRouter: h.SWAP_ROUTER } };
+      case "getLaunchConfig":
+        return { ...base, data: { routerRequiresDeadline: h.routerRequiresDeadline } };
       case "getPool":
         return { ...base, data: h.POOL };
       case "slot0":
@@ -110,6 +118,7 @@ beforeEach(() => {
   h.restrictionsEndBlock = 1000n;
   h.exists = true;
   h.isToken0 = true;
+  h.routerRequiresDeadline = false;
   h.balance = 8n * 10n ** 18n;
   h.allowance = 0n;
 });
@@ -223,8 +232,9 @@ describe("TradePanel", () => {
     const swap = h.writeContractAsync.mock.calls[1][0];
 
     expect(approve.functionName).toBe("approve");
-    // EXACT amount to the router — never max/infinite.
-    expect(approve.args[0]).toBe(h.FACTORY); // router (resolveAddress mocked → FACTORY)
+    // EXACT amount to the token's OWN per-dexId router — never max/infinite,
+    // never the chain default.
+    expect(approve.args[0]).toBe(h.SWAP_ROUTER);
     expect(approve.args[1]).toBe(parseEther("1"));
 
     expect(swap.functionName).toBe("multicall");
@@ -232,6 +242,48 @@ describe("TradePanel", () => {
     expect(swap.args[0]).toHaveLength(2);
     // The approve receipt is awaited between the two writes.
     expect(h.waitForReceipt).toHaveBeenCalled();
+  });
+
+  it("BUY: routes to the token's per-dexId getDexConfig.swapRouter, not a chain-wide default", async () => {
+    // The mocked getDexConfig returns SWAP_ROUTER (distinct from FACTORY, which
+    // is all resolveAddress ever yields here). A per-dexId-aware panel MUST send
+    // the swap to SWAP_ROUTER; the pre-fix code would have used the chain
+    // default (FACTORY), which is the wrong-venue / pool-interception bug.
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /swap/i }));
+
+    await waitFor(() => expect(h.writeContractAsync).toHaveBeenCalledTimes(1));
+    const call = h.writeContractAsync.mock.calls[0][0];
+    expect(call.address).toBe(h.SWAP_ROUTER);
+    expect(call.address).not.toBe(h.FACTORY);
+  });
+
+  it("SELL: approve AND multicall both target the per-dexId router", async () => {
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    fireEvent.click(screen.getByRole("button", { name: /sell/i }));
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /swap/i }));
+
+    await waitFor(() => expect(h.writeContractAsync).toHaveBeenCalledTimes(2));
+    const approve = h.writeContractAsync.mock.calls[0][0];
+    const swap = h.writeContractAsync.mock.calls[1][0];
+    expect(approve.args[0]).toBe(h.SWAP_ROUTER); // allowance granted to the real router
+    expect(swap.address).toBe(h.SWAP_ROUTER); // multicall sent to the real router
+    expect(swap.address).not.toBe(h.FACTORY);
+  });
+
+  it("uses the no-deadline overload for the live default (routerRequiresDeadline=false)", async () => {
+    // 0x04e45aaf is the SwapRouter02 no-deadline exactInputSingle selector; the
+    // buy call must encode against it when the token's config wants no deadline.
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /swap/i }));
+
+    await waitFor(() => expect(h.writeContractAsync).toHaveBeenCalledTimes(1));
+    const call = h.writeContractAsync.mock.calls[0][0];
+    // The no-deadline params object has no `deadline` key.
+    expect(call.args[0]).not.toHaveProperty("deadline");
   });
 
   it("SELL with sufficient allowance: skips approve, multicalls directly", async () => {

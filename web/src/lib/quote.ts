@@ -52,6 +52,15 @@ export interface TokenPool {
   isToken0?: boolean;
   poolFeePpm?: number;
   dexId?: bigint;
+  /** The token's OWN venue router, read from `getDexConfig(dexId).swapRouter`.
+   * A token launched under a non-default dexId points at a different router —
+   * the swap path MUST use this one, never a chain-wide default, or the trade
+   * routes through the wrong venue (or an attacker's pre-seeded pool). */
+  swapRouter?: `0x${string}`;
+  /** `getLaunchConfig(launchConfigId).routerRequiresDeadline` — selects which
+   * `exactInputSingle` ABI shape the token's router expects. `false` for the
+   * live default deployment (SwapRouter02, no deadline). */
+  routerRequiresDeadline?: boolean;
   /** `getLaunchedToken(...).exists` — false ⇒ token failed provenance, refuse to trade. */
   exists: boolean;
   restrictionsEndBlock?: bigint;
@@ -61,6 +70,7 @@ export interface TokenPool {
 interface LaunchedTokenStruct {
   pairedToken: `0x${string}`;
   dexId: bigint;
+  launchConfigId: bigint;
   restrictionsEndBlock: bigint;
   isToken0: boolean;
   poolFee: number;
@@ -69,6 +79,11 @@ interface LaunchedTokenStruct {
 
 interface DexConfigStruct {
   factory: `0x${string}`;
+  swapRouter: `0x${string}`;
+}
+
+interface LaunchConfigStruct {
+  routerRequiresDeadline: boolean;
 }
 
 export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: number): TokenPool {
@@ -91,7 +106,25 @@ export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: n
     args: [token?.dexId ?? 0n],
     query: { enabled: exists && token?.dexId !== undefined },
   });
-  const dexFactory = (dexConfig.data as DexConfigStruct | undefined)?.factory;
+  const dexConfigData = dexConfig.data as DexConfigStruct | undefined;
+  const dexFactory = dexConfigData?.factory;
+  // The token's OWN router — same per-dexId read as the factory above. Never
+  // fall back to a chain-wide default: a differing router means a differing
+  // (possibly hostile) venue.
+  const swapRouter = dexConfigData?.swapRouter;
+
+  // `routerRequiresDeadline` lives on the token's LaunchConfig, not its
+  // DexConfig — read it so the swap builders can select the matching
+  // exactInputSingle overload (false for the live SwapRouter02 default).
+  const launchConfig = useReadContract({
+    address: factory,
+    abi: launchFactoryAbi,
+    functionName: "getLaunchConfig",
+    args: [token?.launchConfigId ?? 0n],
+    query: { enabled: exists && token?.launchConfigId !== undefined },
+  });
+  const routerRequiresDeadline = (launchConfig.data as LaunchConfigStruct | undefined)
+    ?.routerRequiresDeadline;
 
   const poolRead = useReadContract({
     address: dexFactory,
@@ -113,9 +146,12 @@ export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: n
     isToken0: token?.isToken0,
     poolFeePpm: token?.poolFee !== undefined ? Number(token.poolFee) : undefined,
     dexId: token?.dexId,
+    swapRouter,
+    routerRequiresDeadline,
     exists,
     restrictionsEndBlock: token?.restrictionsEndBlock,
-    isLoading: launched.isLoading || dexConfig.isLoading || poolRead.isLoading,
+    isLoading:
+      launched.isLoading || dexConfig.isLoading || launchConfig.isLoading || poolRead.isLoading,
   };
 }
 

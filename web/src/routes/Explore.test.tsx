@@ -83,4 +83,46 @@ describe("Explore", () => {
     const searchResults = await screen.findByTestId("search-results");
     expect(within(searchResults).getByText("Pons Test Token")).toBeInTheDocument();
   });
+
+  it("appends a second page of tokens via Load more when nextCursor is non-null", async () => {
+    const row = (address: string, name: string, symbol: string) => ({
+      address,
+      name,
+      symbol,
+      logo: "https://example.com/logo.png",
+      price: null,
+      marketCap: null,
+      volume24h: "0",
+      priceChangeBps24h: null,
+      holderCount: 1,
+      launchTimestamp: "1755800000",
+    });
+    const page1 = {
+      items: [row("0x1111111111111111111111111111111111111111", "Page One Token", "P1")],
+      nextCursor: "cursor-2",
+    };
+    const page2 = {
+      items: [row("0x2222222222222222222222222222222222222222", "Page Two Token", "P2")],
+      nextCursor: null,
+    };
+    server.use(
+      http.get("*/tokens", ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        return HttpResponse.json(cursor === "cursor-2" ? page2 : page1);
+      }),
+    );
+
+    renderExplore();
+    expect(await screen.findByText("Page One Token")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    // Page two APPENDS (page one still present), then Load more disappears on
+    // the last page (nextCursor === null).
+    expect(await screen.findByText("Page Two Token")).toBeInTheDocument();
+    expect(screen.getByText("Page One Token")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument(),
+    );
+  });
 });

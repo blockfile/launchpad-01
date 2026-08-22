@@ -74,13 +74,17 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   const [slippagePct, setSlippagePct] = useState("1");
   const [busy, setBusy] = useState("");
 
-  // Venue addresses for the swap. `swapRouter`/`weth` are populated on the
-  // configured chain (packages/shared/addresses/<id>.json); `resolveAddress`
-  // throws loudly rather than returning a null into a write.
-  const swapRouter = resolveAddress(chainId, "swapRouter");
+  // WETH is a chain-wide venue address (packages/shared/addresses/<id>.json);
+  // `resolveAddress` throws loudly rather than returning a null into a write.
   const weth = resolveAddress(chainId, "weth");
 
   const pool = useTokenPool(tokenAddress, chainId);
+  // The token's OWN router, read per-dexId from `getDexConfig(dexId).swapRouter`
+  // (never the chain default): a token launched under a non-default dexId points
+  // at a different router, and the allowance read, the approve, and both call
+  // builders must all target THAT router or the trade reverts / routes through
+  // the wrong (possibly attacker-seeded) venue.
+  const swapRouter = pool.swapRouter;
   const amountIn = parseAmount(amount);
   const quote = useSpotQuote({
     pool: pool.pool,
@@ -107,8 +111,11 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
     address: tokenAddress,
     abi: tokenAbi,
     functionName: "allowance",
-    args: [account ?? ZERO_ADDRESS, swapRouter],
-    query: { enabled: side === "sell" && Boolean(account) && Boolean(tokenAddress) },
+    args: [account ?? ZERO_ADDRESS, swapRouter ?? ZERO_ADDRESS],
+    query: {
+      enabled:
+        side === "sell" && Boolean(account) && Boolean(tokenAddress) && Boolean(swapRouter),
+    },
   });
   const allowance = (allowanceRead.data as bigint | undefined) ?? 0n;
 
@@ -122,7 +129,10 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   const estimate = quote.amountOutEstimate;
   const hasQuote = estimate > 0n;
   const minOut = quote.minAmountOut(slippageBps);
-  const canSwap = pool.exists && hasQuote && Boolean(account) && busy === "";
+  // Gate on the per-token router being resolved too: without it we cannot build
+  // a safe approve/swap, so the button stays disabled until the read lands.
+  const canSwap =
+    pool.exists && hasQuote && Boolean(account) && Boolean(swapRouter) && busy === "";
 
   const inSymbol = side === "buy" ? "WETH" : "Token";
   const outSymbol = side === "buy" ? "Token" : "WETH";
@@ -131,6 +141,7 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
     if (
       !account ||
       !tokenAddress ||
+      !swapRouter ||
       pool.poolFeePpm === undefined ||
       pool.isToken0 === undefined ||
       amountIn <= 0n
@@ -139,6 +150,13 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
     }
     try {
       setBusy("swap");
+
+      // A token whose router wants the with-deadline overload gets a far-future
+      // deadline (now + 20 min); the live default (false) passes `undefined`,
+      // keeping the exact no-deadline call the Anvil round-trip proved.
+      const deadline = pool.routerRequiresDeadline
+        ? BigInt(Math.floor(Date.now() / 1000) + 20 * 60)
+        : undefined;
 
       // 1. Fresh price: re-read slot0 and recompute the min-out from the
       // CURRENT tick. Never price against the stale polled quote.
@@ -196,6 +214,7 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
             seller: account,
             amountIn,
             minAmountOut: freshMinOut,
+            deadline,
           }),
         );
       } else {
@@ -208,6 +227,7 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
             recipient: account,
             amountIn,
             minAmountOut: freshMinOut,
+            deadline,
           }),
         );
       }
@@ -229,6 +249,10 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
       queryClient.invalidateQueries({ queryKey: ["trades", tokenAddress] });
       queryClient.invalidateQueries({ queryKey: ["holders", tokenAddress] });
       queryClient.invalidateQueries({ queryKey: ["token", tokenAddress] });
+      // A SELL consumes the exact allowance it approved; refetch it so a second
+      // same-mount sell re-reads the now-zero allowance and re-approves instead
+      // of skipping the approve and reverting on transferFrom.
+      void allowanceRead.refetch();
       setAmount("");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -20,8 +20,11 @@ async function get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
   return schema.parse(json);
 }
 
-export function fetchTokens(params: { sort?: string; cursor?: string }) {
-  const qs = new URLSearchParams(params as Record<string, string>).toString();
+export function fetchTokens(params: { sort?: string; cursor?: string } = {}) {
+  const search = new URLSearchParams();
+  if (params.sort) search.set("sort", params.sort);
+  if (params.cursor) search.set("cursor", params.cursor);
+  const qs = search.toString();
   return get(`/tokens${qs ? `?${qs}` : ""}`, tokensPageSchema);
 }
 export function fetchToken(address: string) {
@@ -33,8 +36,11 @@ export function fetchCandles(address: string, interval: "1m" | "5m" | "1h" | "1d
 export function fetchTrades(address: string, cursor?: string) {
   return get(`/tokens/${address}/trades${cursor ? `?cursor=${cursor}` : ""}`, tradesPageSchema);
 }
-export function fetchHolders(address: string) {
-  return get(`/tokens/${address}/holders`, holdersPageSchema);
+export function fetchHolders(address: string, cursor?: string) {
+  return get(
+    `/tokens/${address}/holders${cursor ? `?cursor=${cursor}` : ""}`,
+    holdersPageSchema,
+  );
 }
 export function search(q: string) {
   return get(`/search?q=${encodeURIComponent(q)}`, searchResultsSchema);

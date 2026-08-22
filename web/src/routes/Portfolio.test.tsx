@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
+import { http, HttpResponse } from "msw";
+import { server } from "../test/setup";
 import holdings from "../lib/indexer/fixtures/holdings.json";
 
 const MANUAL_TOKEN = "0x7777777777777777777777777777777777777777";
@@ -111,5 +113,38 @@ describe("Portfolio", () => {
 
     expect(screen.getByText(/connect a wallet/i)).toBeInTheDocument();
     expect(screen.queryByText("Pons Test Token")).not.toBeInTheDocument();
+  });
+
+  it("appends a second page of holdings via Load more when nextCursor is non-null", async () => {
+    const holding = (tokenAddress: string, name: string, symbol: string) => ({
+      tokenAddress,
+      symbol,
+      name,
+      logo: "https://example.com/logo.png",
+      balance: "1000000000000000000",
+      valueEth: null,
+    });
+    const page1 = {
+      items: [holding("0x1111111111111111111111111111111111111111", "Holding One", "H1")],
+      nextCursor: "holdings-2",
+    };
+    const page2 = {
+      items: [holding("0x2222222222222222222222222222222222222222", "Holding Two", "H2")],
+      nextCursor: null,
+    };
+    server.use(
+      http.get("*/wallets/:address/holdings", ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        return HttpResponse.json(cursor === "holdings-2" ? page2 : page1);
+      }),
+    );
+
+    renderPortfolio();
+    expect(await screen.findByText("Holding One")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    expect(await screen.findByText("Holding Two")).toBeInTheDocument();
+    expect(screen.getByText("Holding One")).toBeInTheDocument();
   });
 });
