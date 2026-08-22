@@ -610,5 +610,10 @@ export const tokenAbi = [
     "type": "error",
     "name": "PoolAlreadySet",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroPool",
+    "inputs": []
   }
 ] as const;

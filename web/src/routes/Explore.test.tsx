@@ -1,0 +1,128 @@
+import { describe, expect, it } from "vitest";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, useLocation } from "react-router";
+import { http, HttpResponse } from "msw";
+import { server } from "../test/setup";
+import Explore from "./Explore";
+import tokens from "../lib/indexer/fixtures/tokens.json";
+
+/** Renders the current route's pathname so navigation can be asserted without
+ * a real `/token/:address` route/page existing yet (that's a later task). */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}</div>;
+}
+
+function renderExplore() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Explore />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("Explore", () => {
+  it("renders the fixture's token rows", async () => {
+    renderExplore();
+
+    expect(await screen.findByText("Pons Test Token")).toBeInTheDocument();
+    expect(screen.getByText("PONS")).toBeInTheDocument();
+    expect(screen.getByText("Untraded Test Token")).toBeInTheDocument();
+    expect(screen.getByText("UTT")).toBeInTheDocument();
+  });
+
+  it("re-queries fetchTokens with the new sort key when a sortable column header is clicked", async () => {
+    const seenSorts: (string | null)[] = [];
+    server.use(
+      http.get("*/tokens", ({ request }) => {
+        seenSorts.push(new URL(request.url).searchParams.get("sort"));
+        return HttpResponse.json(tokens);
+      }),
+    );
+
+    renderExplore();
+    await screen.findByText("Pons Test Token");
+    expect(seenSorts).toEqual(["newest"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /market cap/i }));
+
+    // "Market cap" sorts via B's real `price` sort key (equivalent ordering:
+    // every token's supply is a fixed 1e9), not a `marketCap` key B's
+    // `/tokens` `parseSort` doesn't recognize.
+    await waitFor(() => expect(seenSorts).toEqual(["newest", "price"]));
+  });
+
+  it("navigates to the token detail route when a row is clicked", async () => {
+    renderExplore();
+
+    const nameCell = await screen.findByText("Pons Test Token");
+    fireEvent.click(nameCell);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/token/0x1111111111111111111111111111111111111111",
+      ),
+    );
+  });
+
+  it("opens the ⌘K search box and renders results from search() (proves /search is actually intercepted by MSW)", async () => {
+    renderExplore();
+    await screen.findByText("Pons Test Token");
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = await screen.findByPlaceholderText(/search tokens/i);
+    fireEvent.change(input, { target: { value: "pons" } });
+
+    const searchResults = await screen.findByTestId("search-results");
+    expect(within(searchResults).getByText("Pons Test Token")).toBeInTheDocument();
+  });
+
+  it("appends a second page of tokens via Load more when nextCursor is non-null", async () => {
+    const row = (address: string, name: string, symbol: string) => ({
+      address,
+      name,
+      symbol,
+      logo: "https://example.com/logo.png",
+      price: null,
+      marketCap: null,
+      volume24h: "0",
+      priceChangeBps24h: null,
+      holderCount: 1,
+      launchTimestamp: "1755800000",
+    });
+    const page1 = {
+      items: [row("0x1111111111111111111111111111111111111111", "Page One Token", "P1")],
+      nextCursor: "cursor-2",
+    };
+    const page2 = {
+      items: [row("0x2222222222222222222222222222222222222222", "Page Two Token", "P2")],
+      nextCursor: null,
+    };
+    server.use(
+      http.get("*/tokens", ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        return HttpResponse.json(cursor === "cursor-2" ? page2 : page1);
+      }),
+    );
+
+    renderExplore();
+    expect(await screen.findByText("Page One Token")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /load more/i }));
+
+    // Page two APPENDS (page one still present), then Load more disappears on
+    // the last page (nextCursor === null).
+    expect(await screen.findByText("Page Two Token")).toBeInTheDocument();
+    expect(screen.getByText("Page One Token")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /load more/i })).not.toBeInTheDocument(),
+    );
+  });
+});

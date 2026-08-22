@@ -7,7 +7,9 @@ import {
   launchFactoryAbi,
   lockerAbi,
   tokenAbi,
+  uniswapV3FactoryAbi,
   uniswapV3PoolAbi,
+  swapRouter02Abi,
 } from "../src/index.ts";
 
 test("launchFactoryAbi contains the TokenLaunched event", () => {
@@ -33,6 +35,25 @@ test("lockerAbi exists and is non-empty", () => {
 test("uniswapV3PoolAbi contains the Swap event", () => {
   const event = uniswapV3PoolAbi.find((entry) => entry.type === "event" && entry.name === "Swap");
   assert.ok(event, "expected uniswapV3PoolAbi to contain a Swap event");
+});
+
+test("uniswapV3PoolAbi now also contains slot0/token0/token1", () => {
+  const names = uniswapV3PoolAbi.filter((e) => e.type === "function").map((e) => e.name);
+  assert.ok(names.includes("slot0"));
+  assert.ok(names.includes("token0"));
+  assert.ok(names.includes("token1"));
+});
+
+test("uniswapV3FactoryAbi contains getPool", () => {
+  const fn = uniswapV3FactoryAbi.find((e) => e.type === "function" && e.name === "getPool");
+  assert.ok(fn, "expected uniswapV3FactoryAbi to contain getPool");
+});
+
+test("swapRouter02Abi contains both exactInputSingle shapes plus multicall/unwrapWETH9", () => {
+  const exactInputSingles = swapRouter02Abi.filter((e) => e.type === "function" && e.name === "exactInputSingle");
+  assert.equal(exactInputSingles.length, 2, "expected the deadline and no-deadline exactInputSingle overloads");
+  assert.ok(swapRouter02Abi.some((e) => e.type === "function" && e.name === "multicall"));
+  assert.ok(swapRouter02Abi.some((e) => e.type === "function" && e.name === "unwrapWETH9"));
 });
 
 test("erc20Abi contains the Transfer event", () => {

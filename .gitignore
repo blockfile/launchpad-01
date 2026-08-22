@@ -3,3 +3,5 @@ contracts/out/
 contracts/cache/
 contracts/broadcast/
 .env
+dist/
+*.tsbuildinfo

@@ -1,1 +1,1 @@
-{ "name": "launchpad-01", "private": true, "packageManager": "pnpm@9" }
+{ "name": "launchpad-01", "private": true, "packageManager": "pnpm@9.15.4" }

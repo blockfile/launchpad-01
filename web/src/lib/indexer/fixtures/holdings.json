@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "tokenAddress": "0x1111111111111111111111111111111111111111",
+      "symbol": "PONS",
+      "name": "Pons Test Token",
+      "logo": "https://example.com/pons-logo.png",
+      "balance": "250000000000000000000000",
+      "valueEth": "30.862500000000000000"
+    },
+    {
+      "tokenAddress": "0x9999999999999999999999999999999999999999",
+      "symbol": "UTT",
+      "name": "Untraded Test Token",
+      "logo": "https://example.com/utt-logo.png",
+      "balance": "1000000000000000000",
+      "valueEth": null
+    }
+  ],
+  "nextCursor": null
+}
