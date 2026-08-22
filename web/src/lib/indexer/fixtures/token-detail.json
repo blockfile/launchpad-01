@@ -1,0 +1,27 @@
+{
+  "address": "0x1111111111111111111111111111111111111111",
+  "name": "Pons Test Token",
+  "symbol": "PONS",
+  "logo": "https://example.com/pons-logo.png",
+  "price": "0.000123450000000000",
+  "marketCap": "123450.000000000000000000",
+  "holderCount": 42,
+  "launchTimestamp": "1755800000",
+  "description": "A test token fixture used to exercise the indexer client and later component tests.",
+  "socials": {
+    "twitter": "https://twitter.com/ponstoken",
+    "telegram": "https://t.me/ponstoken",
+    "discord": "https://discord.gg/ponstoken",
+    "website": "https://pons.example",
+    "farcaster": "https://warpcast.com/ponstoken"
+  },
+  "deployer": "0x2222222222222222222222222222222222222222",
+  "poolAddress": "0x3333333333333333333333333333333333333333",
+  "pairedToken": "0x4444444444444444444444444444444444444444",
+  "poolFee": 3000,
+  "supply": "1000000000000000000000000",
+  "dexId": "0",
+  "launchConfigId": "0",
+  "restrictionsEndBlock": "123456",
+  "graduationThreshold": "500000000000000000000"
+}
