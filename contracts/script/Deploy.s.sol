@@ -92,8 +92,18 @@ contract Deploy is Script {
     function run() external returns (LaunchFactory factory, Locker locker) {
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
-        (factory, locker) =
-            _deployAndWire(deployer, deployer, LIVE_V3_FACTORY, LIVE_POSITION_MANAGER, LIVE_SWAP_ROUTER, LIVE_WETH);
+        // `protocolWallet` is `LaunchFactory`'s immutable fee destination —
+        // there is no setter, so getting this wrong at deploy time is
+        // permanent (see `LaunchFactory.protocolWallet`'s NatSpec). Falling
+        // back to `deployer` is only correct for a local/dry-run invocation
+        // (no `--broadcast`, or a throwaway testnet deploy with no real
+        // treasury yet); a production `--broadcast` MUST set the
+        // `PROTOCOL_WALLET` env var to the actual treasury/multisig address,
+        // or every launch fee is permanently routed to the deploying EOA.
+        address protocolWallet_ = vm.envOr("PROTOCOL_WALLET", deployer);
+        (factory, locker) = _deployAndWire(
+            deployer, protocolWallet_, LIVE_V3_FACTORY, LIVE_POSITION_MANAGER, LIVE_SWAP_ROUTER, LIVE_WETH
+        );
         vm.stopBroadcast();
     }
 

@@ -52,11 +52,24 @@ contract LaunchFactoryTest is Test {
     LaunchFactoryHarness factory;
 
     address owner = address(0x0121EA);
-    address locker = address(0x10C4E5);
+    address locker;
     address protocolWallet = address(0x9877E);
     uint256 constant LAUNCH_FEE = 0.0005 ether;
 
+    /// @dev `_ponsDexConfig()`'s `positionManager` — a real `Locker` is
+    ///      deployed in `setUp` wired to this same address, so `setDexConfig`
+    ///      (which now requires `config.positionManager ==
+    ///      Locker(locker).positionManager()`, see `PositionManagerMismatch`)
+    ///      accepts it.
+    address constant DEX_POSITION_MANAGER = address(0x9091);
+
     function setUp() public {
+        // `locker` must be a real contract exposing `positionManager()` now
+        // that `setDexConfig` reads it (a bare non-contract address, as this
+        // used to be, would revert every `setDexConfig` call). The `factory_`
+        // arg here is a throwaway non-zero address — this test class never
+        // calls `lockPosition`, so it's never checked against a real factory.
+        locker = address(new Locker(address(0xF00D), DEX_POSITION_MANAGER, owner));
         factory = new LaunchFactoryHarness(owner, locker, LAUNCH_FEE, protocolWallet);
     }
 
@@ -79,7 +92,7 @@ contract LaunchFactoryTest is Test {
         return LaunchFactory.DexConfig({
             name: "robinhood-v3",
             factory: address(0xFAC7024),
-            positionManager: address(0x9091),
+            positionManager: DEX_POSITION_MANAGER,
             swapRouter: address(0x50171E12),
             poolFee: 10000,
             tickSpacing: 200,
@@ -136,6 +149,36 @@ contract LaunchFactoryTest is Test {
         LaunchFactory.DexConfig memory cfg = _ponsDexConfig();
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
         factory.setDexConfig(0, cfg);
+    }
+
+    /// @dev `Locker.collectFees` always calls its OWN immutable
+    ///      `positionManager` — a `DexConfig` wired to a different position
+    ///      manager would mint that launch's LP-NFT somewhere the Locker can
+    ///      never collect fees from, and locking is permanent (see
+    ///      `Locker`'s NatSpec). `setDexConfig` must reject that at admin
+    ///      time rather than let it become live-and-uncollectable.
+    function test_setDexConfig_reverts_if_positionManager_mismatches_locker() public {
+        LaunchFactory.DexConfig memory cfg = _ponsDexConfig();
+        cfg.positionManager = address(0xBAD9091); // != Locker(locker).positionManager()
+
+        vm.prank(owner);
+        vm.expectRevert(LaunchFactory.PositionManagerMismatch.selector);
+        factory.setDexConfig(0, cfg);
+    }
+
+    /// @dev The mirror-image of the mismatch case: a `DexConfig` whose
+    ///      `positionManager` DOES equal the Locker's must still succeed —
+    ///      already covered by `test_setDexConfig_and_getDexConfig_roundtrip`
+    ///      above, restated here to make the paired pass/fail behavior of
+    ///      the new check explicit in one place.
+    function test_setDexConfig_succeeds_if_positionManager_matches_locker() public {
+        LaunchFactory.DexConfig memory cfg = _ponsDexConfig();
+        assertEq(cfg.positionManager, Locker(locker).positionManager(), "sanity: fixture must actually match");
+
+        vm.prank(owner);
+        factory.setDexConfig(0, cfg);
+
+        assertEq(factory.getDexConfig(0).positionManager, DEX_POSITION_MANAGER);
     }
 
     // -------------------------------------------------------------------

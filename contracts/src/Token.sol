@@ -39,6 +39,11 @@ contract Token is ERC20 {
     /// @dev Reverts on `initPool` if `pairPool` was already set (constructor
     ///      arg or a prior `initPool` call).
     error PoolAlreadySet();
+    /// @dev Reverts on `initPool` if `pool` is the zero address — a zero
+    ///      `pairPool` would silently disable the anti-snipe gate (see
+    ///      `_update`'s `pairPool != address(0)` guard), since a buy could
+    ///      never satisfy `from == pairPool` again.
+    error ZeroPool();
 
     /// @notice The address that deployed this Token (`msg.sender` in the
     ///         constructor). In the real flow this is the launchpad factory;
@@ -111,6 +116,7 @@ contract Token is ERC20 {
     ///         Callable only by `factory`; reverts if `pairPool` is already
     ///         non-zero (set via the constructor or an earlier call).
     function initPool(address pool) external {
+        if (pool == address(0)) revert ZeroPool();
         if (msg.sender != factory) revert NotFactory();
         if (pairPool != address(0)) revert PoolAlreadySet();
         pairPool = pool;

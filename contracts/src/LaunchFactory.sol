@@ -217,6 +217,15 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
     ///      payable/receive fallback). All-or-nothing: this reverts the
     ///      entire launch rather than stranding the fee.
     error FeeTransferFailed();
+    /// @dev `setDexConfig`'s `config.positionManager` did not equal the
+    ///      Locker's own immutable `positionManager`. `Locker.collectFees`
+    ///      always calls its own `positionManager`, never a per-launch value
+    ///      — a DexConfig wired to a different position manager would mint
+    ///      that launch's LP-NFT somewhere the Locker can never collect fees
+    ///      from, and the position is locked with no rescue path (see
+    ///      `Locker`'s contract-level NatSpec), so this must be caught here,
+    ///      before such a config is ever used by a launch.
+    error PositionManagerMismatch();
 
     constructor(address owner_, address locker_, uint256 launchFee_, address protocolWallet_) Ownable(owner_) {
         if (locker_ == address(0) || protocolWallet_ == address(0)) revert ZeroAddress();
@@ -241,7 +250,16 @@ contract LaunchFactory is Ownable2Step, ReentrancyGuard {
 
     /// @notice Sets (or replaces) the `DexConfig` at `id`. Same timelock
     ///         caveat as `setLaunchConfig`.
+    ///
+    ///         Enforces `config.positionManager == Locker(locker).positionManager()`:
+    ///         `_createPoolAndSeed` mints a launch's LP-NFT on
+    ///         `dexConfig.positionManager` and locks it into `locker`, but
+    ///         `Locker.collectFees` always calls its OWN immutable
+    ///         `positionManager` to collect — a mismatched config would
+    ///         permanently strand that token's swap fees (see
+    ///         `PositionManagerMismatch`).
     function setDexConfig(uint256 id, DexConfig calldata config) external onlyOwner {
+        if (config.positionManager != Locker(locker).positionManager()) revert PositionManagerMismatch();
         _dexConfigs[id] = config;
         emit DexConfigSet(id);
     }

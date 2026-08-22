@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {INonfungiblePositionManagerMinimal} from "./interfaces/INonfungiblePositionManagerMinimal.sol";
@@ -25,7 +26,7 @@ import {INonfungiblePositionManagerMinimal} from "./interfaces/INonfungiblePosit
 ///         contract `collectFees` calls to pull accrued fees. The real
 ///         interface is defined in a later task; here it is the minimal
 ///         `INonfungiblePositionManagerMinimal` slice.
-contract Locker is Ownable2Step, ERC721Holder {
+contract Locker is Ownable2Step, ERC721Holder, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     /// @notice Hard ceiling on the protocol's share of collected fees, out of
@@ -171,7 +172,7 @@ contract Locker is Ownable2Step, ERC721Holder {
     ///         snapshotted `protocolFeeShare`) out to `creatorWallet` and
     ///         `protocolWallet`. Gated by the `feeCollectors` allow-list —
     ///         this only ever moves *fees*, never the locked position itself.
-    function collectFees(address token) external returns (uint256 amount0, uint256 amount1) {
+    function collectFees(address token) external nonReentrant returns (uint256 amount0, uint256 amount1) {
         if (!feeCollectors[msg.sender]) revert NotFeeCollector();
 
         TokenLock storage rec = tokenLocks[token];

@@ -139,6 +139,19 @@ contract TokenCapTest is Test {
         fresh.initPool(pool);
     }
 
+    /// @dev A zero `pool` would silently disable the anti-snipe gate (see
+    ///      `_update`'s `pairPool != address(0)` guard) — must revert even
+    ///      when called by the legitimate `factory` caller.
+    function test_initPool_reverts_on_zero_pool() public {
+        Token.Socials memory s = Token.Socials("t", "tg", "d", "w", "f");
+        Token.TokenMeta memory m = Token.TokenMeta("Name", "SYM", "ipfs://logo", "desc", s);
+        Token fresh = new Token(m, SUPPLY, address(this), address(0), 2, 500, 550, launchBuyer);
+        // address(this) is `fresh`'s factory (deployer), so this reaches the
+        // zero-pool check rather than reverting on NotFactory.
+        vm.expectRevert(Token.ZeroPool.selector);
+        fresh.initPool(address(0));
+    }
+
     // --- Isolate the maxTx clause from the maxWallet clause ------------
     // Elsewhere in this suite maxTxBps(550) > maxWalletBps(500), so any
     // value > maxTx also has balanceOf(to)+value > maxWallet: the maxWallet
