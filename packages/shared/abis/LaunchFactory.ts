@@ -565,7 +565,7 @@ export const launchFactoryAbi = [
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -990,7 +990,17 @@ export const launchFactoryAbi = [
   },
   {
     "type": "error",
+    "name": "RenounceDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "TickOutOfRange",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TickSpacingMismatch",
     "inputs": []
   },
   {

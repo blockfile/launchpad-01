@@ -221,7 +221,7 @@ export const lockerAbi = [
     "name": "renounceOwnership",
     "inputs": [],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -550,6 +550,11 @@ export const lockerAbi = [
   },
   {
     "type": "error",
+    "name": "RenounceDisabled",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -558,6 +563,11 @@ export const lockerAbi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "SelfAddress",
+    "inputs": []
   },
   {
     "type": "error",

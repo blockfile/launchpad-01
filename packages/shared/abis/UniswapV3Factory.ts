@@ -31,6 +31,25 @@ export const uniswapV3FactoryAbi = [
   },
   {
     "type": "function",
+    "name": "feeAmountTickSpacing",
+    "inputs": [
+      {
+        "name": "fee",
+        "type": "uint24",
+        "internalType": "uint24"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int24",
+        "internalType": "int24"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getPool",
     "inputs": [
       {
