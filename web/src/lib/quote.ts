@@ -63,6 +63,13 @@ export interface TokenPool {
   routerRequiresDeadline?: boolean;
   /** `getLaunchedToken(...).exists` — false ⇒ token failed provenance, refuse to trade. */
   exists: boolean;
+  /** True when the token exists but its LIVE `getDexConfig(dexId).factory` no
+   * longer derives a pool for it (`getPool` → `address(0)`) AND no immutable
+   * fallback pool was supplied. This happens when an owner repoints an in-use
+   * dexId's factory (`LaunchedToken` does not snapshot `factory`/`swapRouter`).
+   * Callers MUST surface a clear "trading disabled" state rather than render a
+   * silently-dead Swap button. */
+  poolUnavailable: boolean;
   restrictionsEndBlock?: bigint;
   isLoading: boolean;
 }
@@ -86,7 +93,14 @@ interface LaunchConfigStruct {
   routerRequiresDeadline: boolean;
 }
 
-export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: number): TokenPool {
+export function useTokenPool(
+  tokenAddress: `0x${string}` | undefined,
+  chainId: number,
+  /** B's stored `poolAddress` for this token (from `fetchToken`), immutable from
+   * the launch event. Used ONLY to fill a live `getPool` zero when the DEX
+   * config drifted — never to override a live pool. */
+  fallbackPool?: `0x${string}`,
+): TokenPool {
   const factory = resolveAddress(chainId, "factory");
 
   const launched = useReadContract({
@@ -138,7 +152,21 @@ export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: n
     query: { enabled: Boolean(dexFactory) && Boolean(tokenAddress) && token?.poolFee !== undefined },
   });
   const poolAddress = poolRead.data as `0x${string}` | undefined;
-  const pool = poolAddress && poolAddress !== ZERO_ADDRESS ? poolAddress : undefined;
+  const livePool = poolAddress && poolAddress !== ZERO_ADDRESS ? poolAddress : undefined;
+  // Fall back to B's immutable stored pool ONLY to fill a live zero (config
+  // drift), never to override a live pool the factory still resolves.
+  const fallback = fallbackPool && fallbackPool !== ZERO_ADDRESS ? fallbackPool : undefined;
+  const pool = livePool ?? (exists ? fallback : undefined);
+  // The live `getDexConfig` factory resolved but `getPool` returned zero for an
+  // existing token, and there is no fallback pool: the venue config drifted and
+  // there is nothing to trade against. Surface it (TradePanel shows a clear
+  // "trading disabled" message) rather than leaving a silently-dead Swap button.
+  const poolUnavailable =
+    exists &&
+    Boolean(dexFactory) &&
+    !poolRead.isLoading &&
+    livePool === undefined &&
+    fallback === undefined;
 
   return {
     pool,
@@ -149,6 +177,7 @@ export function useTokenPool(tokenAddress: `0x${string}` | undefined, chainId: n
     swapRouter,
     routerRequiresDeadline,
     exists,
+    poolUnavailable,
     restrictionsEndBlock: token?.restrictionsEndBlock,
     isLoading:
       launched.isLoading || dexConfig.isLoading || launchConfig.isLoading || poolRead.isLoading,

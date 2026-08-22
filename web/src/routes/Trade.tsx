@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams } from "react-router";
 import { useQuery, useInfiniteQuery } from "@tanstack/react-query";
+import { formatEther } from "viem";
 import { fetchToken, fetchCandles, fetchTrades, fetchHolders } from "../lib/indexer/client";
 import { PriceChart } from "../components/PriceChart";
 import { TradePanel } from "../components/TradePanel";
@@ -13,14 +14,24 @@ type Tab = "trades" | "holders";
 const TIMEFRAMES: Timeframe[] = ["1m", "5m", "1h", "1d"];
 
 // Same rationale as Explore's own copy of this helper (see Explore.tsx):
-// price/marketCap/trade-price/holder-balance are already human-decimal
-// strings from B, so this is just a thousands-separator pass, never
-// `formatEth` (which expects wei bigints). Kept local rather than shared —
-// every route owning its own small formatters is the established pattern
-// here rather than growing a shared "indexer number formatting" module.
+// price/marketCap/trade-price are already human-decimal strings from B, so this
+// is just a thousands-separator pass, never `formatEther` (which expects wei
+// bigints). Kept local rather than shared — every route owning its own small
+// formatters is the established pattern here rather than growing a shared
+// "indexer number formatting" module. NOTE: a holder `balance` is NOT one of
+// these — it is RAW 18-dec wei on the wire (see `formatBalance` below).
 function formatDecimalString(value: string | null): string {
   if (value == null) return "—";
   return Number(value).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+// A holder `balance` from B's `/tokens/:address/holders` is RAW 18-dec wei
+// (unlike price/marketCap, which arrive already human-decimal), so it MUST go
+// through `formatEther` first — the same rule Portfolio's own `formatBalance`
+// applies. Rendering it via `formatDecimalString` printed the raw wei integer,
+// i.e. every balance 10^18× too large.
+function formatBalance(raw: string): string {
+  return Number(formatEther(BigInt(raw))).toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
 // Holder share-of-supply is already a plain percentage (not bps, unlike
@@ -208,7 +219,7 @@ export default function Trade() {
                   {holders.map((holder) => (
                     <tr key={holder.address}>
                       <td>{shortAddress(holder.address)}</td>
-                      <td>{formatDecimalString(holder.balance)}</td>
+                      <td>{formatBalance(holder.balance)}</td>
                       <td>{formatSharePct(holder.pct)}</td>
                     </tr>
                   ))}
@@ -231,7 +242,10 @@ export default function Trade() {
         </div>
       </div>
 
-      <TradePanel tokenAddress={address as `0x${string}` | undefined} />
+      <TradePanel
+        tokenAddress={address as `0x${string}` | undefined}
+        fallbackPoolAddress={token?.poolAddress as `0x${string}` | undefined}
+      />
     </div>
   );
 }

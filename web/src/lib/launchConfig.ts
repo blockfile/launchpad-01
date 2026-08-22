@@ -55,15 +55,31 @@ export interface AvailableLaunchConfigs {
 
 const PROBE_IDS = Array.from({ length: 10 }, (_, i) => BigInt(i));
 
-/** Tries B's indexed `/launch-configs` first (cheap, one HTTP round trip);
- * only when that errors does it fall back to a direct fixed 0-9 on-chain
- * probe of the factory's `getLaunchConfig`/`getDexConfig` (id space is capped
- * at 10 by convention — there is no on-chain "how many configs exist"
- * accessor to page through), keeping only the `enabled` ones. Both paths
- * return the identical `AvailableLaunchConfigs` shape. */
+/** Tries B's indexed `/launch-configs` first (cheap, one HTTP round trip); it
+ * falls back to a direct fixed 0-9 on-chain probe of the factory's
+ * `getLaunchConfig`/`getDexConfig` (id space is capped at 10 by convention —
+ * there is no on-chain "how many configs exist" accessor to page through),
+ * keeping only the `enabled` ones. Both paths return the identical
+ * `AvailableLaunchConfigs` shape.
+ *
+ * Crucially the probe fires not only when B *errors* but also when B answers
+ * successfully with an EMPTY list in either dimension: B's `/launch-configs`
+ * returns 200 `{launchConfigIds:[], dexIds:[]}` whenever its tables are empty
+ * — the normal state in the deploy→index-lag window and after every resync.
+ * Treating that empty-but-successful answer as "no options" froze the Launch
+ * form's ids at 0n and made every submit revert; instead we fall through to the
+ * on-chain probe and prefer its non-empty result over B's empty one. */
 export function useAvailableLaunchConfigs(chainId: number): AvailableLaunchConfigs {
   const indexed = useQuery({ queryKey: ["launch-configs"], queryFn: fetchLaunchConfigs, retry: false });
   const factory = resolveAddress(chainId, "factory");
+
+  const indexedData = indexed.data;
+  // B "has nothing to offer" if it errored OR resolved with an empty list in
+  // either dimension (a launch needs BOTH an enabled launchConfigId and an
+  // enabled dexId, so an empty either side is unusable).
+  const indexedUsable =
+    !!indexedData && indexedData.launchConfigIds.length > 0 && indexedData.dexIds.length > 0;
+
   const probe = useReadContracts({
     contracts: PROBE_IDS.flatMap(
       (id) =>
@@ -72,13 +88,21 @@ export function useAvailableLaunchConfigs(chainId: number): AvailableLaunchConfi
           { address: factory, abi: launchFactoryAbi, functionName: "getDexConfig", args: [id] },
         ] as const,
     ),
-    query: { enabled: indexed.isError },
+    query: { enabled: indexed.isError || !indexedUsable },
   });
 
-  if (indexed.data) return indexed.data;
-  if (!probe.data) return { launchConfigIds: [], dexIds: [] };
-  return {
-    launchConfigIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2]?.result?.enabled).map(Number),
-    dexIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2 + 1]?.result?.enabled).map(Number),
-  };
+  // B's answer wins only when it is actually usable (non-empty in both lists).
+  if (indexedUsable) return indexedData;
+
+  // Otherwise prefer the on-chain probe's result, but only once it has resolved
+  // to something non-empty — until then fall back to B's (possibly empty) data.
+  if (probe.data) {
+    const probed: AvailableLaunchConfigs = {
+      launchConfigIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2]?.result?.enabled).map(Number),
+      dexIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2 + 1]?.result?.enabled).map(Number),
+    };
+    if (probed.launchConfigIds.length > 0 || probed.dexIds.length > 0) return probed;
+  }
+
+  return indexedData ?? { launchConfigIds: [], dexIds: [] };
 }

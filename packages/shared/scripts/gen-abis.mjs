@@ -7,7 +7,7 @@
 // Prerequisite: `forge build` must have populated contracts/out/.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -15,8 +15,14 @@ const SHARED_DIR = join(__dirname, "..");
 const CONTRACTS_DIR = join(SHARED_DIR, "..", "..", "contracts");
 const CONTRACTS_OUT = join(CONTRACTS_DIR, "out");
 const CONTRACTS_BROADCAST = join(CONTRACTS_DIR, "broadcast");
-const ABIS_DIR = join(SHARED_DIR, "abis");
-const ADDRESSES_DIR = join(SHARED_DIR, "addresses");
+// Output dirs default to the committed locations; the ABIS_OUT_DIR /
+// ADDRESSES_OUT_DIR env overrides exist only so a test can drive the real
+// generator into a scratch dir without touching (or racing readers of) the
+// committed tree.
+const ABIS_DIR = process.env.ABIS_OUT_DIR ? resolve(process.env.ABIS_OUT_DIR) : join(SHARED_DIR, "abis");
+const ADDRESSES_DIR = process.env.ADDRESSES_OUT_DIR
+  ? resolve(process.env.ADDRESSES_OUT_DIR)
+  : join(SHARED_DIR, "addresses");
 
 mkdirSync(ABIS_DIR, { recursive: true });
 mkdirSync(ADDRESSES_DIR, { recursive: true });
@@ -133,12 +139,24 @@ if (!transferEvent) {
 writeAbiFile("ERC20", "erc20Abi", [transferEvent]);
 
 // ---------------------------------------------------------------------------
-// Step 3: per-chain addresses. Our own factory/locker are read from the
-// broadcast run log when a real deploy has happened; otherwise they are
-// `null` placeholders. The DEX addresses are the live Robinhood Chain (4663)
-// Uniswap-V3-shaped venue; no separate testnet (46630) DEX deployment is
+// Step 3: per-chain addresses. The DEX addresses are the live Robinhood Chain
+// (4663) Uniswap-V3-shaped venue; no separate testnet (46630) DEX deployment is
 // documented anywhere in this repo, so the same values are used there too
 // until/unless testnet-specific addresses are confirmed.
+//
+// Our own factory/locker are NEVER promoted from the broadcast log by default.
+// A routine `forge build` + `pnpm gen-abis` after a LOCAL-FORK rehearsal leaves
+// a real-looking `broadcast/Deploy.s.sol/4663/run-latest.json` (chain 4663 is
+// the real mainnet id, deployer = an Anvil default), and silently promoting it
+// would flip the committed `addresses/4663.json` factory/locker from their
+// correct `null` placeholders to throwaway fork addresses — a poisoned address
+// file that, if committed and deployed, points B/C at a dead address. So:
+//
+//   * Default: regenerate the ABIs, but leave `addresses/<chainId>.json`
+//     UNCHANGED — the committed factory/locker values are preserved verbatim.
+//   * Opt-in (`PROMOTE_DEPLOY_ADDRESSES=1`): read the broadcast log and update
+//     factory/locker — but REFUSE to promote for a non-testnet chain id when the
+//     broadcast deployer (tx `from`) is a known Anvil/Foundry default account.
 // ---------------------------------------------------------------------------
 
 const DEX_ADDRESSES = {
@@ -150,17 +168,58 @@ const DEX_ADDRESSES = {
 
 const CHAIN_IDS = [4663, 46630];
 
+// Chain ids that are safe to auto-promote a fork/default-deployer broadcast for
+// (a testnet id is throwaway by nature). Everything else is treated as a
+// production id where an Anvil-default deployer signals a fork rehearsal.
+const TESTNET_CHAIN_IDS = new Set([46630]);
+
+// The standard Foundry/Anvil default accounts, derived from the well-known test
+// mnemonic ("test test test test test test test test test test test junk").
+// A broadcast whose deployer is one of these on a NON-testnet chain is a local
+// fork rehearsal, never a real deploy — refuse to promote its addresses.
+const ANVIL_DEFAULT_ACCOUNTS = new Set(
+  [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+    "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
+    "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+    "0x976EA74026E726554dB657fA54763abd0C3a0aa9",
+    "0x14dC79964da2C08b23698B3D3cc7Ca32193d9955",
+    "0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f",
+    "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720",
+  ].map((a) => a.toLowerCase()),
+);
+
+const PROMOTE = process.env.PROMOTE_DEPLOY_ADDRESSES === "1";
+
+/** Reads the committed `addresses/<chainId>.json` (if any) so a default run can
+ * preserve its factory/locker verbatim. Returns `{ factory: null, locker: null }`
+ * when the file is absent or unparseable. */
+function readCommittedAddresses(chainId) {
+  const path = join(ADDRESSES_DIR, `${chainId}.json`);
+  if (!existsSync(path)) return { factory: null, locker: null };
+  try {
+    const current = JSON.parse(readFileSync(path, "utf8"));
+    return { factory: current.factory ?? null, locker: current.locker ?? null };
+  } catch {
+    return { factory: null, locker: null };
+  }
+}
+
 /**
  * Reads contracts/broadcast/Deploy.s.sol/<chainId>/run-latest.json (if it
- * exists) and pulls out the deployed LaunchFactory/Locker CREATE addresses.
- * Returns { factory: null, locker: null } when no deploy has happened yet, or
- * when the file exists but can't be parsed as expected (fails soft: this
- * script should never hard-fail just because a deploy log is malformed).
+ * exists) and pulls out the deployed LaunchFactory/Locker CREATE addresses plus
+ * the deployer (the CREATE tx's `from`). Returns nulls when no deploy has
+ * happened yet, or when the file exists but can't be parsed as expected (fails
+ * soft: this script should never hard-fail just because a deploy log is
+ * malformed).
  */
 function readDeployedAddresses(chainId) {
   const runPath = join(CONTRACTS_BROADCAST, "Deploy.s.sol", String(chainId), "run-latest.json");
   if (!existsSync(runPath)) {
-    return { factory: null, locker: null };
+    return { factory: null, locker: null, deployer: null };
   }
   try {
     const run = JSON.parse(readFileSync(runPath, "utf8"));
@@ -171,21 +230,60 @@ function readDeployedAddresses(chainId) {
     const lockerTx = transactions.find(
       (tx) => tx.transactionType === "CREATE" && tx.contractName === "Locker",
     );
+    // Foundry nests the signer under `.transaction.from`; tolerate a top-level
+    // `.from` too in case a future broadcast schema flattens it.
+    const deployer =
+      factoryTx?.transaction?.from ?? factoryTx?.from ?? lockerTx?.transaction?.from ?? lockerTx?.from ?? null;
     return {
       factory: factoryTx?.contractAddress ?? null,
       locker: lockerTx?.contractAddress ?? null,
+      deployer,
     };
   } catch (err) {
-    console.warn(`warning: found ${runPath} but failed to parse it (${err.message}); using null placeholders`);
-    return { factory: null, locker: null };
+    console.warn(`warning: found ${runPath} but failed to parse it (${err.message}); leaving addresses unchanged`);
+    return { factory: null, locker: null, deployer: null };
   }
 }
 
-for (const chainId of CHAIN_IDS) {
+/**
+ * Resolves the factory/locker to write for a chain. Default: the committed
+ * values, untouched. Promote mode: the broadcast values, unless the chain is a
+ * production id deployed by an Anvil default account (a fork rehearsal), in
+ * which case it refuses and keeps the committed values.
+ */
+function resolveOwnAddresses(chainId) {
+  const committed = readCommittedAddresses(chainId);
+  if (!PROMOTE) {
+    return committed;
+  }
   const deployed = readDeployedAddresses(chainId);
+  if (deployed.factory === null && deployed.locker === null) {
+    console.log(
+      `addresses/${chainId}.json: PROMOTE set but no broadcast log found — keeping committed factory/locker.`,
+    );
+    return committed;
+  }
+  const deployer = deployed.deployer ? String(deployed.deployer).toLowerCase() : null;
+  const isDefaultDeployer = deployer !== null && ANVIL_DEFAULT_ACCOUNTS.has(deployer);
+  if (isDefaultDeployer && !TESTNET_CHAIN_IDS.has(chainId)) {
+    console.warn(
+      `addresses/${chainId}.json: REFUSING to promote — broadcast deployer ${deployed.deployer} is a known ` +
+        `Anvil/Foundry default account on a non-testnet chain (looks like a local-fork rehearsal). ` +
+        `Committed factory/locker preserved.`,
+    );
+    return committed;
+  }
+  console.log(
+    `addresses/${chainId}.json: promoting broadcast addresses (deployer=${deployed.deployer ?? "unknown"}).`,
+  );
+  return { factory: deployed.factory, locker: deployed.locker };
+}
+
+for (const chainId of CHAIN_IDS) {
+  const own = resolveOwnAddresses(chainId);
   const addresses = {
-    factory: deployed.factory,
-    locker: deployed.locker,
+    factory: own.factory,
+    locker: own.locker,
     ...DEX_ADDRESSES,
   };
   writeFileSync(join(ADDRESSES_DIR, `${chainId}.json`), `${JSON.stringify(addresses, null, 2)}\n`);

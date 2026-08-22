@@ -62,7 +62,16 @@ function displayWei(wei: bigint): string {
  *   4. Notify + invalidate this token's trades/holders queries so the page
  *      reflects the trade without a manual refresh (B re-indexes async).
  */
-export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
+export function TradePanel({
+  tokenAddress,
+  fallbackPoolAddress,
+}: {
+  tokenAddress?: `0x${string}`;
+  /** B's stored, immutable `poolAddress` for this token (from `fetchToken`).
+   * Lets trading survive a drifted live DEX config: if the on-chain `getPool`
+   * has been repointed to zero, we still trade against the real launch pool. */
+  fallbackPoolAddress?: `0x${string}`;
+}) {
   const chainId = useChainId();
   const { address: account } = useAccount();
   const config = useConfig();
@@ -78,7 +87,7 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   // `resolveAddress` throws loudly rather than returning a null into a write.
   const weth = resolveAddress(chainId, "weth");
 
-  const pool = useTokenPool(tokenAddress, chainId);
+  const pool = useTokenPool(tokenAddress, chainId, fallbackPoolAddress);
   // The token's OWN router, read per-dexId from `getDexConfig(dexId).swapRouter`
   // (never the chain default): a token launched under a non-default dexId points
   // at a different router, and the allowance read, the approve, and both call
@@ -288,6 +297,20 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
         className="h-fit rounded border border-slate-700 p-4 text-sm text-amber-400"
       >
         This address is not a launched token and cannot be traded here.
+      </div>
+    );
+  }
+
+  // The token is a real launch, but its live venue config no longer resolves a
+  // pool (an owner repointed the dexId's factory) and we have no stored fallback
+  // pool. Explain it instead of rendering a permanently-dead Swap button.
+  if (pool.poolUnavailable) {
+    return (
+      <div
+        data-testid="trade-panel"
+        className="h-fit rounded border border-slate-700 p-4 text-sm text-amber-400"
+      >
+        Pool unavailable for this token's venue — trading disabled.
       </div>
     );
   }

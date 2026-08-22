@@ -112,6 +112,10 @@ export const launchConfigs = onchainTable("launch_configs", (t) => ({
   supply: t.bigint().notNull(),
   maxWalletBps: t.integer().notNull(),
   maxTxBps: t.integer().notNull(),
+  // Solidity emits this as uint32; t.integer() is Postgres int4 (max ~2.1B), so
+  // a restrictionBlocks value > 2^31-1 would overflow on insert. Practically
+  // unreachable (a >2.1B-block anti-snipe window is millennia-scale), so no
+  // schema change — noted only so a future widening of this field is on record.
   restrictionBlocks: t.integer().notNull(),
   reservedFee: t.integer().notNull(),
   enabled: t.boolean().notNull(),

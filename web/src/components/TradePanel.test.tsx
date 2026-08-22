@@ -23,6 +23,9 @@ const h = vi.hoisted(() => {
     // targets THIS router, never a chain-wide default.
     SWAP_ROUTER: addr("55"),
     POOL: addr("c0"),
+    // What the live `getPool` returns — overridable per-test so a test can
+    // simulate an owner repointing the dexId's factory (getPool → zero).
+    poolAddress: addr("c0"),
     PAIRED: addr("ee"),
     TOKEN: addr("70"),
     ZERO: ("0x" + "00".repeat(20)) as `0x${string}`,
@@ -74,7 +77,7 @@ vi.mock("wagmi", () => ({
       case "getLaunchConfig":
         return { ...base, data: { routerRequiresDeadline: h.routerRequiresDeadline } };
       case "getPool":
-        return { ...base, data: h.POOL };
+        return { ...base, data: h.poolAddress };
       case "slot0":
         return { ...base, data: h.slot0 };
       case "balanceOf":
@@ -121,6 +124,7 @@ beforeEach(() => {
   h.routerRequiresDeadline = false;
   h.balance = 8n * 10n ** 18n;
   h.allowance = 0n;
+  h.poolAddress = h.POOL;
 });
 
 // TradePanel now uses `useQueryClient` (post-swap cache invalidation), so every
@@ -196,6 +200,30 @@ describe("TradePanel", () => {
     expect(
       screen.getByText(/not a launched token|cannot be traded|provenance/i),
     ).toBeInTheDocument();
+  });
+
+  it("shows 'pool unavailable' (never a silent dead Swap button) when live getPool returns zero for an existing token", () => {
+    // An owner repointed the dexId's factory: getPool now derives address(0)
+    // while exists stays true. Pre-fix this rendered a permanently-dead Swap
+    // button with no explanation.
+    h.poolAddress = h.ZERO;
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+
+    expect(screen.getByText(/pool unavailable/i)).toBeInTheDocument();
+    // The whole trade affordance is gone — no dead button, no amount box.
+    expect(screen.queryByRole("button", { name: /swap/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/amount/i)).not.toBeInTheDocument();
+  });
+
+  it("falls back to B's stored poolAddress when live getPool has drifted to zero, keeping trading enabled", () => {
+    // Same drift as above, but B's immutable launch-event poolAddress is passed
+    // as a fallback — the pool contract itself is unchanged, so trading works.
+    h.poolAddress = h.ZERO;
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} fallbackPoolAddress={h.POOL} />);
+
+    expect(screen.queryByText(/pool unavailable/i)).not.toBeInTheDocument();
+    fireEvent.change(amountInput(), { target: { value: "1" } });
+    expect(screen.getByRole("button", { name: /swap/i })).toBeEnabled();
   });
 
   // --- Write flow (Task 12) ------------------------------------------------

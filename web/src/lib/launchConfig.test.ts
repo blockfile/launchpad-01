@@ -92,4 +92,28 @@ describe("useAvailableLaunchConfigs", () => {
 
     await waitFor(() => expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0] }));
   });
+
+  it("falls back to the on-chain probe when B resolves 200 with EMPTY lists (deploy→index-lag window), preferring the probe's non-empty result", async () => {
+    // B is UP and returns a successful, well-formed — but empty — payload (its
+    // tables are empty between a real deploy and indexer catch-up, and after
+    // every resync). This must NOT be treated as "no options": the probe fires
+    // and its non-empty result wins over B's empty answer.
+    vi.mocked(fetchLaunchConfigs).mockResolvedValue({ launchConfigIds: [], dexIds: [] });
+
+    const probeData = Array.from({ length: 20 }, (_, i) => ({
+      result: { enabled: i === 0 || i === 1 }, // only id 0's launch/dex pair is enabled on-chain
+    }));
+    vi.mocked(useReadContracts).mockReturnValue({ data: probeData } as never);
+
+    const { result } = renderHook(() => useAvailableLaunchConfigs(4663), { wrapper: createWrapper() });
+
+    // The probe is enabled on an empty-but-successful B response, not only on error.
+    await waitFor(() => {
+      const call = vi.mocked(useReadContracts).mock.calls.at(-1)?.[0];
+      expect(call?.query?.enabled).toBe(true);
+    });
+
+    // Old behavior returned B's empty {[],[]}; the fix returns the probe's ids.
+    await waitFor(() => expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0] }));
+  });
 });

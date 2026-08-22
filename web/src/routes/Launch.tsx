@@ -93,6 +93,35 @@ function devBuyToWei(value: string): bigint {
   }
 }
 
+/** Turns a failed-launch error (a wagmi/viem write error, or a mined-but-
+ * reverted receipt) into a user-facing toast message + severity. A cancelled
+ * wallet prompt is an "info"; everything else is an "error". The two
+ * config-gate custom errors are named explicitly when viem decoded them — the
+ * common cause is a stale, now-disabled launchConfig/dexId (see the M3
+ * empty-config-picker bug that could leave a 0n id selected). */
+function launchFailureToast(error: unknown): { message: string; level: "info" | "error" } {
+  const text = error instanceof Error ? error.message : error ? String(error) : "";
+  if (/user rejected|user denied|rejected the request|denied transaction/i.test(text)) {
+    return { message: "Transaction rejected.", level: "info" };
+  }
+  if (/LaunchConfigDisabled/.test(text)) {
+    return {
+      message: "Launch reverted: that launch config is disabled. Pick another launch config and try again.",
+      level: "error",
+    };
+  }
+  if (/DexConfigDisabled/.test(text)) {
+    return {
+      message: "Launch reverted: that DEX is disabled. Pick another DEX and try again.",
+      level: "error",
+    };
+  }
+  return {
+    message: "Launch failed — the transaction reverted or was rejected. Nothing was deployed.",
+    level: "error",
+  };
+}
+
 export default function Launch() {
   const chainId = useChainId();
   const { address } = useAccount();
@@ -189,7 +218,7 @@ export default function Launch() {
   const devBuyWei = useMemo(() => devBuyToWei(values.devBuyEth), [values.devBuyEth]);
   const totalValue = launchFee === undefined ? undefined : launchFee + devBuyWei;
 
-  const { writeContract, data: hash, isPending } = useWriteContract();
+  const { writeContract, data: hash, isPending, error: writeError, reset: resetWrite } = useWriteContract();
   const receipt = useWaitForTransactionReceipt({ hash });
 
   // The body actually submitted, held past modal-close so the post-receipt
@@ -224,6 +253,26 @@ export default function Launch() {
     navigate(`/token/${decoded}`);
   }, [receipt.isSuccess, receipt.data, navigate]);
 
+  // Surface a FAILED launch (mirrors TradePanel's revert handling). Two failure
+  // shapes: (1) the write itself errored — the user rejected it, or the node
+  // rejected/simulated-reverted it before broadcast (a stale
+  // LaunchConfigDisabled/DexConfigDisabled lands here) — and (2) the tx mined
+  // but REVERTED (viem RESOLVES the receipt with status "reverted"; it does not
+  // throw, so `isSuccess` stays false and the navigate effect above never
+  // fires). Either way: toast the reason and `reset()` the write state so the
+  // stale `hash` no longer disables the modal's Launch button and the form can
+  // be retried. Fires exactly once per failed attempt.
+  const failureNotified = useRef(false);
+  useEffect(() => {
+    const reverted = receipt.data?.status === "reverted";
+    const failed = Boolean(writeError) || receipt.isError || reverted;
+    if (!failed || failureNotified.current) return;
+    failureNotified.current = true;
+    const { message, level } = launchFailureToast(writeError ?? receipt.error);
+    notify(message, level);
+    resetWrite();
+  }, [writeError, receipt.isError, receipt.data, receipt.error, resetWrite]);
+
   const showPredicted = Boolean(values.name && values.symbol && values.logo);
   const canReview =
     armed &&
@@ -256,6 +305,10 @@ export default function Launch() {
   function confirmLaunch() {
     if (!pending) return;
     submitted.current = pending;
+    // A fresh attempt: re-arm the one-shot success/failure guards so a retry
+    // after a previous failure can navigate or toast again.
+    navigated.current = false;
+    failureNotified.current = false;
     writeContract({
       address: factory,
       abi: launchFactoryAbi,

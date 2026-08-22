@@ -106,6 +106,23 @@ recommend closing before audit sign-off for completeness. `LaunchedToken` proven
 snapshot (copied into a memory `LaunchContext` before any external call, written once) — a later admin
 edit to `LaunchConfig`/`DexConfig` cannot retroactively alter an already-launched token's recorded terms.
 
+**Venue-address drift — `LaunchedToken` does NOT snapshot `factory`/`swapRouter` (pre-mainnet/audit
+hardening item).** The recorded *terms* are snapshotted, but the token's venue *addresses* are not:
+`LaunchedToken` stores `dexId` only, and consumers re-read the live `getDexConfig(dexId).factory` /
+`.swapRouter` on every trade (the frontend derives the pool via
+`IUniswapV3Factory(factory).getPool(token, pairedToken, poolFee)`, and routes swaps through the live
+`swapRouter`). Because `setDexConfig` can repoint an **in-use** dexId, an owner (or a compromised owner
+key) who changes a live `factory` makes `getPool` return `address(0)` for every token on that dexId —
+breaking pool derivation — and a changed `swapRouter` would route in-flight trades through a different
+venue. This contradicts the spec's "config snapshotted per token" intent for the venue addresses
+specifically. The frontend has a C-side mitigation (it now surfaces an explicit "Pool unavailable for
+this token's venue — trading disabled" state instead of a silently-dead Swap button, and can fall back to
+the indexer's immutable stored `poolAddress` from the launch event), but that does not close the on-chain
+root cause. **Recommended pre-audit hardening (contract change, out of scope for the frontend fix):**
+either snapshot `factory` + `swapRouter` into `LaunchedToken` at launch (making a token's venue immutable,
+matching the snapshot intent), or make `setDexConfig` append-only for an already-in-use dexId (repoints
+only allowed to a fresh dexId). Left open for the audit to weigh; not marked done.
+
 ### 6. DoS
 
 No public or external function anywhere in `src/` takes an array-typed parameter (grep-verified across

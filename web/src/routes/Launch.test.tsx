@@ -25,7 +25,13 @@ const h = vi.hoisted(() => ({
   writeContract: vi.fn(),
   navigate: vi.fn(),
   notify: vi.fn(),
-  state: { hash: undefined as `0x${string}` | undefined, receipt: undefined as unknown },
+  reset: vi.fn(),
+  state: {
+    hash: undefined as `0x${string}` | undefined,
+    receipt: undefined as { status?: string; logs?: unknown[] } | undefined,
+    writeError: undefined as unknown,
+    receiptError: undefined as unknown,
+  },
   predicted: { current: undefined as string | undefined },
   launchFee: { current: 0n as bigint | undefined },
 }));
@@ -38,11 +44,17 @@ vi.mock("wagmi", () => ({
     writeContract: h.writeContract,
     data: h.state.hash,
     isPending: false,
-    reset: vi.fn(),
+    error: h.state.writeError,
+    reset: h.reset,
   }),
   useWaitForTransactionReceipt: () => ({
     data: h.state.receipt,
-    isSuccess: Boolean(h.state.receipt),
+    // Faithful to viem: a mined-but-reverted receipt RESOLVES with
+    // status "reverted" (not isSuccess). A receipt with no status field is a
+    // legacy success fixture.
+    isSuccess: Boolean(h.state.receipt) && h.state.receipt?.status !== "reverted",
+    isError: Boolean(h.state.receiptError),
+    error: h.state.receiptError,
     isLoading: false,
   }),
 }));
@@ -123,8 +135,11 @@ beforeEach(() => {
   });
   h.navigate.mockReset();
   h.notify.mockReset();
+  h.reset.mockReset();
   h.state.hash = undefined;
   h.state.receipt = undefined;
+  h.state.writeError = undefined;
+  h.state.receiptError = undefined;
   h.predicted.current = PREDICTED;
   h.launchFee.current = LAUNCH_FEE;
 });
@@ -236,5 +251,56 @@ describe("Launch", () => {
 
     await waitFor(() => expect(h.navigate).toHaveBeenCalledWith(`/token/${DEPLOYED}`));
     expect(h.notify).toHaveBeenCalled();
+  });
+
+  it("surfaces a write-time revert (LaunchConfigDisabled): error toast, no navigation, form reset", async () => {
+    // The node rejects/simulates-reverts before broadcast: no hash, a decodable
+    // custom error surfaces on useWriteContract. Pre-fix this closed the modal
+    // and did nothing — no toast, no re-enabled form.
+    h.writeContract.mockImplementation(() => {
+      h.state.writeError = new Error(
+        'The contract function "launchToken" reverted.\n\nError: LaunchConfigDisabled()',
+      );
+    });
+
+    render(<Launch />);
+    fillValidForm();
+    fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
+    const review = screen.getByRole("button", { name: /review launch/i });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(
+        expect.stringMatching(/launch config is disabled/i),
+        "error",
+      ),
+    );
+    expect(h.navigate).not.toHaveBeenCalled();
+    // Write state reset so the stale hash no longer disables Launch — retryable.
+    expect(h.reset).toHaveBeenCalled();
+  });
+
+  it("treats a mined-but-reverted receipt as a failure: error toast, no false success, no navigation", async () => {
+    // viem RESOLVES a reverted tx's receipt with status "reverted" (never
+    // throws), so the success/navigate path must not fire.
+    h.writeContract.mockImplementation(() => {
+      h.state.hash = `0x${"a".repeat(64)}`;
+      h.state.receipt = { status: "reverted", logs: [] };
+    });
+
+    render(<Launch />);
+    fillValidForm();
+    fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
+    const review = screen.getByRole("button", { name: /review launch/i });
+    await waitFor(() => expect(review).toBeEnabled());
+    fireEvent.click(review);
+    fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
+
+    await waitFor(() =>
+      expect(h.notify).toHaveBeenCalledWith(expect.stringMatching(/reverted|failed/i), "error"),
+    );
+    expect(h.navigate).not.toHaveBeenCalled();
   });
 });

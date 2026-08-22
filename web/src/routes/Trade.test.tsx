@@ -147,6 +147,18 @@ describe("Trade", () => {
     expect(screen.getByText(/50(\.00)?%/)).toBeInTheDocument();
   });
 
+  it("renders holder balances as human token amounts (formatEther of B's raw wei), not the raw 10^18 integer", async () => {
+    // holders.json: 0x2222 holds "500000000000000000000000" wei = 500,000 tokens.
+    // The stale-comment bug rendered that raw wei string (10^18× too large).
+    renderTrade();
+    await screen.findByText("Pons Test Token");
+    fireEvent.click(screen.getByRole("button", { name: "Holders" }));
+
+    expect(await screen.findByText("500,000")).toBeInTheDocument();
+    // The raw wei integer must NOT appear anywhere.
+    expect(screen.queryByText("500,000,000,000,000,000,000,000")).not.toBeInTheDocument();
+  });
+
   it("mounts the TradePanel wired to the route token address", async () => {
     renderTrade();
     await screen.findByText("Pons Test Token");
