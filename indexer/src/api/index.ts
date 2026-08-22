@@ -202,9 +202,10 @@ app.get("/tokens/:address/holders", async (c) => {
   const limit = clampLimit(c.req.query("limit"));
   const cursor = decodeCursor(c.req.query("cursor"));
   const where = !cursor
-    ? eq(holders.tokenAddress, address)
+    ? and(eq(holders.tokenAddress, address), gte(holders.balance, 1n))
     : and(
         eq(holders.tokenAddress, address),
+        gte(holders.balance, 1n),
         or(
           lt(holders.balance, BigInt(cursor.v)),
           and(eq(holders.balance, BigInt(cursor.v)), lt(holders.holderAddress, cursor.a as `0x${string}`)),

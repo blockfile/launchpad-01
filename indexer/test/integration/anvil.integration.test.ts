@@ -53,7 +53,7 @@ function killTree(child: ChildProcess | undefined) {
 
 let anvil: ChildProcess | undefined;
 let ponder: ChildProcess | undefined;
-let seeded: { factory: string; token: string; pool: string };
+let seeded: { factory: string; token: string; pool: string; token2: string; pool2: string; zeroedHolder: string };
 
 async function rpcCall(url: string, method: string, params: unknown[] = []): Promise<string> {
   const res = await fetch(url, {
@@ -132,6 +132,31 @@ async function waitForIndexedToken(timeoutMs = 180_000) {
   throw new Error(`indexer never indexed the seeded token within ${timeoutMs}ms (${lastErr})`);
 }
 
+// TOKEN2 (see seed-anvil.sh) launches strictly after TOKEN, in a later block,
+// with an atomic dev buy immediately followed by a same-block sell against
+// its own pool — exactly the race LaunchFactory.ts's fix is about. Waiting
+// for it specifically (rather than relying on `waitForIndexedToken`, which
+// is satisfied the moment TOKEN alone shows up) is a direct, first-class
+// check that the indexer kept processing past that block instead of halting
+// (blocker 2's worst case: an unhandled throw in `applyTransfer`).
+async function waitForToken(address: string, timeoutMs = 60_000) {
+  const start = Date.now();
+  let lastErr = "indexer HTTP never responded";
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const res = await fetch(`${INDEXER_URL}/tokens/${address}`);
+      if (res.status === 200) return;
+      lastErr = `/tokens/${address} -> HTTP ${res.status}`;
+    } catch {
+      lastErr = "indexer HTTP server not reachable";
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    `indexer never indexed token ${address} within ${timeoutMs}ms (${lastErr}) — possible halt processing its launch block`,
+  );
+}
+
 describe("indexer against a local Anvil deploy of sub-project A", () => {
   beforeAll(async () => {
     const forkUrl = process.env.ROBINHOOD_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com";
@@ -181,6 +206,7 @@ describe("indexer against a local Anvil deploy of sub-project A", () => {
       },
     );
     await waitForIndexedToken();
+    await waitForToken(seeded.token2); // see the function's own doc-comment: proves the indexer didn't halt on TOKEN2's launch block
   });
 
   afterAll(() => {
@@ -248,5 +274,71 @@ describe("indexer against a local Anvil deploy of sub-project A", () => {
     const res = await fetch(`${INDEXER_URL}/wallets/${RECIPIENT}/holdings`);
     const body = await res.json();
     expect(body.items.some((h: { tokenAddress: string }) => h.tokenAddress.toLowerCase() === seeded.token.toLowerCase())).toBe(true);
+  });
+
+  // Blocker 2: LaunchFactory's TokenLaunched handler used to overwrite
+  // holders(pool) with a balanceOf(pool) read pinned to the launch block —
+  // a read that, on this fixture, already reflects the same-block sell
+  // seed-anvil.sh drives right after the launch (see its own comment for the
+  // full mechanism). `beforeAll`'s `waitForToken(seeded.token2)` already
+  // proved the indexer didn't halt reaching this point; this test proves the
+  // resulting holder balances are actually correct, not just present.
+  it("fires the atomic dev buy for a nonzero-initialBuyAmount launch and keeps holders(pool) correct despite a same-block sell", async () => {
+    const [tokenRes, holdersRes] = await Promise.all([
+      fetch(`${INDEXER_URL}/tokens/${seeded.token2}`),
+      fetch(`${INDEXER_URL}/tokens/${seeded.token2}/holders`),
+    ]);
+    expect(tokenRes.status).toBe(200);
+    expect(holdersRes.status).toBe(200);
+    const token = await tokenRes.json();
+    const holdersBody = await holdersRes.json();
+
+    expect(holdersBody.nextCursor).toBeNull(); // pool2 + buyer (+ any dust) fit on one page — no page boundary hiding a mismatch
+    // NOT asserting items.length === totalHolders here: the factory itself
+    // is left holding a tiny liquidity-seeding rounding remainder, which —
+    // like the dev buy — is a pre-launch-row transfer (before TokenLaunched
+    // inserts the `tokens` row), so per Token.ts's own documented guard it
+    // never adjusts holderCount. That's real, pre-existing behavior
+    // orthogonal to both blockers this fix wave addresses, not something to
+    // paper over with a false equality.
+
+    const pool2Item = holdersBody.items.find((h: { address: string }) => h.address.toLowerCase() === seeded.pool2.toLowerCase());
+    const buyerItem = holdersBody.items.find((h: { address: string }) => h.address.toLowerCase() === SENDER_ADDRESS.toLowerCase());
+    expect(pool2Item).toBeDefined();
+    expect(buyerItem).toBeDefined();
+    expect(BigInt(pool2Item.balance)).toBeGreaterThan(0n);
+    expect(BigInt(buyerItem.balance)).toBeGreaterThan(0n);
+
+    // ERC20 conservation invariant: every raw unit of supply is minted once
+    // (constructor mint to the pool) and only ever moves between tracked
+    // holders from there — pool seed, dev buy, and the same-block sell are
+    // all transfers between $SENDER and pool2, never a burn. The double-
+    // count this fix prevents (TokenLaunched's overwrite + the sell's own
+    // Transfer log both applying the same delta) would break this sum,
+    // silently, without necessarily throwing.
+    const sum = holdersBody.items.reduce((acc: bigint, h: { balance: string }) => acc + BigInt(h.balance), 0n);
+    expect(sum).toBe(BigInt(token.supply));
+  });
+
+  // Blocker 1: Token.ts only ever upserts `holders` rows, never deletes —
+  // a holder that fully exits leaves a real balance=0 row behind. $FOURTH
+  // (seed-anvil.sh) is driven to exactly that: it receives TOKEN, then
+  // forwards its entire balance onward, so its row lands at balance=0
+  // without ever being removed.
+  it("excludes a zero-balance ex-holder from /tokens/:address/holders and keeps totalHolders consistent", async () => {
+    const res = await fetch(`${INDEXER_URL}/tokens/${seeded.token}/holders`);
+    const body = await res.json();
+
+    const zeroed = body.items.find((h: { address: string }) => h.address.toLowerCase() === seeded.zeroedHolder.toLowerCase());
+    expect(zeroed).toBeUndefined();
+
+    expect(body.nextCursor).toBeNull(); // small, known holder set — no truncation could be hiding the phantom row instead
+    expect(body.items.every((h: { balance: string }) => BigInt(h.balance) > 0n)).toBe(true); // no phantom zero-balance rows survive at all
+    // NOT asserting items.length === totalHolders: the factory keeps a tiny
+    // liquidity-seeding rounding remainder as a real, nonzero holders row,
+    // but — being a pre-launch-row transfer — it never adjusts holderCount
+    // (see the same note in the token2 test above). totalHolders is
+    // therefore a lower bound here, not an exact match for the page.
+    expect(body.items.length).toBeGreaterThanOrEqual(body.totalHolders);
   });
 });

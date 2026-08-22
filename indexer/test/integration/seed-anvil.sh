@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # Deploys sub-project A to a local (forked) Anvil already running on $RPC_URL,
-# via A's own unmodified contracts/script/Deploy.s.sol, then drives one
-# launch + one buy (post-restriction-window) + one wallet transfer so the
-# indexer has real, known history to sync against. Prints a single JSON line:
-# {"factory":"0x..","token":"0x..","pool":"0x.."}
+# via A's own unmodified contracts/script/Deploy.s.sol, then drives:
+#   - one zero-dev-buy launch (TOKEN) + one post-restriction-window buy + one
+#     wallet transfer + one "drive a holder to zero balance" pair of transfers
+#     (via $FOURTH), so the indexer has real, known history to sync against
+#     and a genuine phantom zero-balance holders row to exclude.
+#   - a second, nonzero-dev-buy launch (TOKEN2) immediately followed, in the
+#     SAME block, by a sell against its own pool — exercising the atomic
+#     dev-buy path and the same-block pool-balance race LaunchFactory.ts's
+#     fix guards against.
+# Prints a single JSON line:
+# {"factory":"0x..","token":"0x..","pool":"0x..","token2":"0x..","pool2":"0x..","zeroedHolder":"0x.."}
 set -euo pipefail
 # Foundry (anvil/forge/cast) is NOT on PATH on this machine — see task-10-brief
 # REQUIRED CORRECTION 2. Prepend its real location so forge/cast resolve when
@@ -14,6 +21,8 @@ RPC_URL="${RPC_URL:-http://127.0.0.1:8560}"
 PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}" # Anvil's well-known default account #0 — local/disposable chain only
 SENDER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"        # the address that key controls (Anvil default #0)
 RECIPIENT="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"     # Anvil default account #1
+FOURTH="0x90F79bf6EB2c4f870365E785982E1f101E93b906"        # Anvil default account #3 — used only as the "drive to zero" holder below
+FOURTH_KEY="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
 WETH="0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
 SWAP_ROUTER="0xCaf681a66D020601342297493863E78C959E5cb2"
 UNISWAP_V3_FACTORY="0x1f7d7550B1b028f7571E69A784071F0205FD2EfA"
@@ -53,7 +62,7 @@ retry() {
 # Clearing the delegation code makes them behave as the plain, 10000-ETH dev
 # EOAs this seed assumes.
 BAL=$(cast to-hex 10000000000000000000000) # 10000 ETH
-for A in "$SENDER" "$RECIPIENT"; do
+for A in "$SENDER" "$RECIPIENT" "$FOURTH"; do
   retry cast rpc anvil_setCode "$A" 0x --rpc-url "$RPC_URL" 1>&2
   retry cast rpc anvil_setBalance "$A" "$BAL" --rpc-url "$RPC_URL" 1>&2
 done
@@ -99,4 +108,86 @@ cast send "$SWAP_ROUTER" \
 # A plain wallet-to-wallet transfer, to exercise holders beyond launch/swap.
 cast send "$TOKEN" "transfer(address,uint256)" "$RECIPIENT" 1000000000000000000 --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 1>&2
 
-printf '{"factory":"%s","token":"%s","pool":"%s"}\n' "$FACTORY" "$TOKEN" "$POOL"
+# ---------------------------------------------------------------------------
+# Blocker 2 regression fixture: a SECOND launch (TOKEN2) with a NONZERO
+# initialBuyAmount — the atomic dev buy path is otherwise never exercised —
+# immediately followed, in the SAME block, by a plain SELL of a sliver of
+# that dev-buy balance back into TOKEN2's own pool. A sell (to == pairPool)
+# is never gated by Token.sol's anti-snipe check (only from == pairPool,
+# i.e. buys, are — see `_update`), so it lands cleanly even inside the
+# launch block itself, unlike a second buyer trying to buy in that same
+# block (which Token.sol's launch-block ban would revert).
+#
+# This reproduces exactly the shape LaunchFactory.ts's fix guards against:
+# its balanceOf(pool2) read is pinned to this block number, so by the time
+# it runs it already reflects BOTH the dev buy AND this same-block sell —
+# state Token:Transfer hasn't "seen" yet in log order. The old
+# onConflictDoUpdate(balance=poolBalance) would overwrite what
+# Token:Transfer already built authoritatively from the real logs; when
+# the sell's own Transfer(SENDER -> pool2) log is then (re-)applied on top
+# of that overwritten value, the delta double-counts — see the code
+# comment in LaunchFactory.ts for the full mechanism.
+#
+# All 3 sends below are from $SENDER at sequential nonces, so plain
+# per-account nonce ordering — not gas price / mempool priority — is what
+# guarantees the launch lands before the approve before the sell once
+# mined together: nonce ordering is a protocol-level invariant every EVM
+# client enforces, unlike cross-account mempool ordering.
+SALT2=0x0000000000000000000000000000000000000000000000000000000000000002
+PARAMS2="(\"Test Token 2\",\"TEST2\",\"ipfs://logo2\",\"a second test token\",(\"\",\"\",\"\",\"\",\"\"),$NO_FEE_WALLET)"
+MAX_UINT256=115792089237316195423570985008687907853269984665640564039457584007913129639935
+
+TOKEN2=$(retry cast call "$FACTORY" \
+  "predictTokenAddress((string,string,string,string,(string,string,string,string,string),address),uint256,uint256,bytes32,address)(address)" \
+  "$PARAMS2" 0 0 "$SALT2" "$SENDER" --rpc-url "$RPC_URL")
+
+# Pin explicit, sequential nonces for the 3-tx batch below rather than
+# relying on cast's automatic "pending nonce" lookup per send: with
+# automine off, back-to-back sends from the same signer can race that
+# lookup (observed in practice as a spurious "replacement transaction
+# underpriced", the 2nd/3rd send landing on the SAME nonce as the 1st).
+BASE_NONCE=$(retry cast nonce "$SENDER" --rpc-url "$RPC_URL")
+
+retry cast rpc anvil_setAutomine false --rpc-url "$RPC_URL" 1>&2
+
+# nonce BASE_NONCE: launch TOKEN2 with msg.value beyond launchFee => nonzero
+# initialBuyAmount => the atomic dev buy fires, to launchBuyer = $SENDER
+# (feeWallet is NO_FEE_WALLET in $PARAMS2, same as $PARAMS above).
+cast send "$FACTORY" \
+  "launchToken((string,string,string,string,(string,string,string,string,string),address),uint256,uint256,bytes32)" \
+  "$PARAMS2" 0 0 "$SALT2" \
+  --value 550000000000000 --nonce "$BASE_NONCE" --async --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 1>&2
+
+# nonce BASE_NONCE+1: approve the router for TOKEN2 — needs an explicit
+# --gas-limit because TOKEN2 has no code yet at submission time (the launch
+# above is still only pending), so cast's default eth_estimateGas would fail.
+cast send "$TOKEN2" "approve(address,uint256)" "$SWAP_ROUTER" "$MAX_UINT256" \
+  --gas-limit 100000 --nonce "$((BASE_NONCE + 1))" --async --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 1>&2
+
+# nonce BASE_NONCE+2: sell a sliver of the just-bought TOKEN2 back into the
+# pool, in the SAME block as the launch — the "later same-block tx that
+# touches the pool" the fix is about. amountOutMinimum=0 for the same
+# no-external-price-reference reason the contract's own dev buy uses it.
+cast send "$SWAP_ROUTER" \
+  "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))" \
+  "($TOKEN2,$WETH,10000,$SENDER,1000,0,0)" \
+  --gas-limit 500000 --nonce "$((BASE_NONCE + 2))" --async --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 1>&2
+
+retry cast rpc anvil_mine 0x1 --rpc-url "$RPC_URL" 1>&2
+retry cast rpc anvil_setAutomine true --rpc-url "$RPC_URL" 1>&2
+
+POOL2=$(retry cast call "$UNISWAP_V3_FACTORY" "getPool(address,address,uint24)(address)" "$TOKEN2" "$WETH" 10000 --rpc-url "$RPC_URL")
+
+# ---------------------------------------------------------------------------
+# Blocker 1 regression fixture: drive a holder to an EXACT zero balance by
+# having it forward its entire balance onward. Token.ts only ever upserts
+# `holders` rows (never deletes), so this leaves a real, persisted
+# balance=0 row for $FOURTH — exactly the phantom row "/holders" must now
+# exclude. Uses a separate wallet ($FOURTH) rather than $RECIPIENT so the
+# existing /wallets/:address/holdings assertion for $RECIPIENT's (nonzero)
+# TOKEN balance stays untouched.
+cast send "$TOKEN" "transfer(address,uint256)" "$FOURTH" 500000000000000000 --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 1>&2
+cast send "$TOKEN" "transfer(address,uint256)" "$SENDER" 500000000000000000 --rpc-url "$RPC_URL" --private-key "$FOURTH_KEY" 1>&2
+
+printf '{"factory":"%s","token":"%s","pool":"%s","token2":"%s","pool2":"%s","zeroedHolder":"%s"}\n' \
+  "$FACTORY" "$TOKEN" "$POOL" "$TOKEN2" "$POOL2" "$FOURTH"

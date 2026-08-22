@@ -12,8 +12,14 @@ ponder.on("LaunchFactory:TokenLaunched", async ({ event, context }) => {
   // token's own self-report), cosmetic metadata (the token's own getters —
   // safe, it's the same contract we just watched being created), the
   // launch config (for the inert graduationThreshold), and a direct
-  // balanceOf(pool) read that seeds holders without depending on catching
-  // the constructor's own same-tx Transfer log.
+  // balanceOf(pool) read that seeds only the holderCount baseline in
+  // buildTokenRow (poolBalance > 0n ? 1 : 0) — NOT an authoritative
+  // holders(pool) balance. It's a block-tag (event.block.number) read, so on
+  // a launch with a same-block later tx touching the pool it would already
+  // include that later tx's effect; the Token:Transfer handler is what
+  // authoritatively builds holders(pool), from the real Transfer logs in
+  // order, so this value must never overwrite that row (see the
+  // onConflictDoNothing below).
   const [launchedToken, name, symbol, decimals, logo, description, socials, launchConfig, poolBalance] =
     await context.client.multicall({
       allowFailure: false,
@@ -53,10 +59,19 @@ ponder.on("LaunchFactory:TokenLaunched", async ({ event, context }) => {
     })
     .onConflictDoNothing();
 
+  // Defensive insert only — if the row already exists (the Token:Transfer
+  // handler got here first, which is the common case since it processes the
+  // same-tx mint/seed Transfer logs), do nothing. The Token:Transfer handler
+  // is authoritative for holders(pool): it's built from the actual Transfer
+  // logs in log order, including any later same-block transaction that also
+  // touches the pool. Overwriting it here with `poolBalance` (an
+  // end-of-block balanceOf(pool) read) would double-count that later
+  // transaction's delta once the Transfer handler re-applies it — or
+  // underflow and throw in applyTransfer, halting the whole indexer.
   await context.db
     .insert(holders)
     .values({ id: `${token}-${pool}`, tokenAddress: token, holderAddress: pool, balance: poolBalance })
-    .onConflictDoUpdate({ balance: poolBalance });
+    .onConflictDoNothing();
 });
 
 ponder.on("LaunchFactory:LaunchConfigSet", async ({ event, context }) => {
