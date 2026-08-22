@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings on every platform — CRLF breaks bash
+# (`$'\r': command not found`, mangled shebang). The Task 10 integration seed
+# (indexer/test/integration/seed-anvil.sh) is run through Git Bash on Windows,
+# where core.autocrlf=true would otherwise rewrite it to CRLF on checkout.
+*.sh text eol=lf

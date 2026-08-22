@@ -1,0 +1,26 @@
+{
+  "name": "@launchpad/indexer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ponder dev",
+    "start": "ponder start",
+    "codegen": "ponder codegen",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@launchpad/shared": "workspace:*",
+    "ponder": "0.17.8",
+    "viem": "2.55.19",
+    "hono": "4.13.3",
+    "drizzle-orm": "0.41.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.0.0"
+  }
+}
