@@ -1,8 +1,25 @@
 import { useState } from "react";
-import { useAccount, useBlockNumber, useChainId, useReadContract } from "wagmi";
+import {
+  useAccount,
+  useBlockNumber,
+  useChainId,
+  useConfig,
+  useReadContract,
+  useWriteContract,
+} from "wagmi";
+import { waitForTransactionReceipt } from "wagmi/actions";
+import { useQueryClient } from "@tanstack/react-query";
 import { formatEther, parseEther } from "viem";
 import { tokenAbi } from "@launchpad/shared";
-import { useTokenPool, useSpotQuote, type TradeSide } from "../lib/quote";
+import {
+  useTokenPool,
+  useSpotQuote,
+  spotAmountOut,
+  applySlippage,
+  type TradeSide,
+} from "../lib/quote";
+import { resolveAddress } from "../lib/contracts";
+import { buildBuyCall, buildSellCall } from "../lib/swap";
 import { BusyButton } from "./ui/BusyButton";
 import { notify } from "../lib/toast";
 
@@ -27,19 +44,41 @@ function displayWei(wei: bigint): string {
 }
 
 /**
- * Buy/sell panel for one launched token. The estimate and its slippage-floored
- * `minAmountOut` come from `useSpotQuote` (a live `slot0` read); the Swap action
- * is DISABLED until that estimate is a real positive number, so there is no code
- * path that submits a min-out of 0. The actual swap write lands in Task 12,
- * which re-reads `slot0` via `quote.refetch()` immediately before pricing.
+ * Buy/sell panel for one launched token.
+ *
+ * The estimate and its slippage-floored `minAmountOut` come from `useSpotQuote`
+ * (a live `slot0` read); the Swap action is DISABLED until that estimate is a
+ * real positive number, so there is no code path that submits a min-out of 0.
+ *
+ * On submit the write flow is (safety-critical, each step load-bearing):
+ *   1. `quote.refetch()` — re-read `slot0` NOW and recompute `minAmountOut`
+ *      from the CURRENT tick; never submit against the stale polled quote,
+ *      never a zero min-out.
+ *   2. SELL only: if `token.allowance(user, router) < amountIn`, `approve` the
+ *      EXACT `amountIn` (never max/infinite), await its receipt, then proceed —
+ *      `exactInputSingle` consumes exactly `amountIn`, leaving no residual
+ *      allowance standing.
+ *   3. `buildBuyCall`/`buildSellCall` + `writeContract`, await the receipt.
+ *   4. Notify + invalidate this token's trades/holders queries so the page
+ *      reflects the trade without a manual refresh (B re-indexes async).
  */
 export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   const chainId = useChainId();
   const { address: account } = useAccount();
+  const config = useConfig();
+  const queryClient = useQueryClient();
+  const { writeContractAsync } = useWriteContract();
 
   const [side, setSide] = useState<TradeSide>("buy");
   const [amount, setAmount] = useState("");
   const [slippagePct, setSlippagePct] = useState("1");
+  const [busy, setBusy] = useState("");
+
+  // Venue addresses for the swap. `swapRouter`/`weth` are populated on the
+  // configured chain (packages/shared/addresses/<id>.json); `resolveAddress`
+  // throws loudly rather than returning a null into a write.
+  const swapRouter = resolveAddress(chainId, "swapRouter");
+  const weth = resolveAddress(chainId, "weth");
 
   const pool = useTokenPool(tokenAddress, chainId);
   const amountIn = parseAmount(amount);
@@ -62,6 +101,17 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   });
   const balance = (balanceRead.data as bigint | undefined) ?? 0n;
 
+  // SELL needs the token's allowance to the router; BUY never touches it (the
+  // WETH input is native msg.value).
+  const allowanceRead = useReadContract({
+    address: tokenAddress,
+    abi: tokenAbi,
+    functionName: "allowance",
+    args: [account ?? ZERO_ADDRESS, swapRouter],
+    query: { enabled: side === "sell" && Boolean(account) && Boolean(tokenAddress) },
+  });
+  const allowance = (allowanceRead.data as bigint | undefined) ?? 0n;
+
   const { data: currentBlock } = useBlockNumber({ watch: true });
   const restricted =
     pool.restrictionsEndBlock !== undefined &&
@@ -72,10 +122,110 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
   const estimate = quote.amountOutEstimate;
   const hasQuote = estimate > 0n;
   const minOut = quote.minAmountOut(slippageBps);
-  const canSwap = pool.exists && hasQuote && Boolean(account);
+  const canSwap = pool.exists && hasQuote && Boolean(account) && busy === "";
 
   const inSymbol = side === "buy" ? "WETH" : "Token";
   const outSymbol = side === "buy" ? "Token" : "WETH";
+
+  async function submitSwap() {
+    if (
+      !account ||
+      !tokenAddress ||
+      pool.poolFeePpm === undefined ||
+      pool.isToken0 === undefined ||
+      amountIn <= 0n
+    ) {
+      return;
+    }
+    try {
+      setBusy("swap");
+
+      // 1. Fresh price: re-read slot0 and recompute the min-out from the
+      // CURRENT tick. Never price against the stale polled quote.
+      const fresh = (await quote.refetch()) as
+        | { data?: readonly [bigint, ...unknown[]] }
+        | undefined;
+      const freshSqrt = fresh?.data?.[0];
+      if (freshSqrt === undefined || freshSqrt <= 0n) {
+        notify("Could not read a fresh price — swap aborted.", "error");
+        return;
+      }
+      const freshEstimate = spotAmountOut({
+        sqrtPriceX96: freshSqrt,
+        isToken0: pool.isToken0,
+        tokenInIsPaired: side === "buy",
+        amountIn,
+        poolFeePpm: pool.poolFeePpm,
+      });
+      const freshMinOut = applySlippage(freshEstimate, slippageBps);
+      // Belt-and-braces: never submit a zero minimum-out even if a fresh read
+      // somehow returns a degenerate price.
+      if (freshMinOut <= 0n) {
+        notify("Quote unavailable — refusing to swap with a zero minimum out.", "error");
+        return;
+      }
+
+      let hash: `0x${string}`;
+      if (side === "sell") {
+        // 2. Approve the EXACT amountIn, only if the standing allowance is
+        // short. exactInputSingle then consumes exactly amountIn — no residual.
+        if (allowance < amountIn) {
+          const approveHash = await writeContractAsync({
+            address: tokenAddress,
+            abi: tokenAbi,
+            functionName: "approve",
+            args: [swapRouter, amountIn],
+          });
+          await waitForTransactionReceipt(config, { hash: approveHash });
+          await allowanceRead.refetch();
+        }
+        hash = await writeContractAsync(
+          buildSellCall({
+            router: swapRouter,
+            weth,
+            token: tokenAddress,
+            poolFee: pool.poolFeePpm,
+            seller: account,
+            amountIn,
+            minAmountOut: freshMinOut,
+          }),
+        );
+      } else {
+        hash = await writeContractAsync(
+          buildBuyCall({
+            router: swapRouter,
+            weth,
+            token: tokenAddress,
+            poolFee: pool.poolFeePpm,
+            recipient: account,
+            amountIn,
+            minAmountOut: freshMinOut,
+          }),
+        );
+      }
+
+      await waitForTransactionReceipt(config, { hash });
+      notify("Swap complete", "ok");
+
+      // Reflect the new trade without a manual refresh; B's own indexing fills
+      // the rest in asynchronously on its own schedule.
+      queryClient.invalidateQueries({ queryKey: ["trades", tokenAddress] });
+      queryClient.invalidateQueries({ queryKey: ["holders", tokenAddress] });
+      queryClient.invalidateQueries({ queryKey: ["token", tokenAddress] });
+      setAmount("");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/user rejected|denied|rejected the request/i.test(message)) {
+        notify("Transaction rejected.", "info");
+      } else {
+        notify("Swap failed — it may have reverted or the price moved past your slippage.", "error");
+      }
+      // eslint-disable-next-line no-console
+      console.error("swap failed", err);
+    } finally {
+      setBusy("");
+    }
+  }
 
   if (!tokenAddress) return null;
 
@@ -197,16 +347,11 @@ export function TradePanel({ tokenAddress }: { tokenAddress?: `0x${string}` }) {
       {!account && <p className="mt-3 text-xs text-amber-400">Connect a wallet to trade.</p>}
 
       <BusyButton
-        busy=""
+        busy={busy}
         busyWhen="swap"
         disabled={!canSwap}
         className="mt-4 w-full rounded bg-sky-600 px-4 py-2 font-semibold disabled:opacity-40"
-        onClick={() =>
-          // Write wiring is Task 12: it re-reads slot0 via quote.refetch() and
-          // submits with this exact minOut. Never reachable with a 0 estimate —
-          // the button is disabled above until the quote resolves.
-          notify("Swap execution ships in the next update.", "info")
-        }
+        onClick={() => void submitSwap()}
       >
         Swap
       </BusyButton>
