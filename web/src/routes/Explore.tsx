@@ -1,11 +1,17 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Link, useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTokens, search } from "../lib/indexer/client";
 import type { SearchResults } from "../lib/indexer/schema";
 import { formatAge, formatPct } from "../lib/format";
 
-type SortKey = "newest" | "marketCap" | "volume24h" | "priceChange24h";
+// Reconciled against B's real `/tokens` capability (indexer/src/api/helpers.ts
+// `parseSort`), which only accepts `newest|price|holders` — anything else
+// silently falls back to `newest` against a real indexer. "Market cap" sorts
+// by `price` (equivalent: every token's supply is a fixed 1e9, so
+// market-cap order == price order); 24h volume and 24h change stay
+// DISPLAY-only columns, never sort keys B doesn't support.
+type SortKey = "newest" | "price" | "holders";
 
 /** `item.price`/`item.marketCap`/`item.volume24h` are already human-decimal
  * strings from B (B's `formatPrice18` did the wei→decimal conversion
@@ -18,6 +24,7 @@ function formatDecimalString(value: string | null): string {
 }
 
 export default function Explore() {
+  const navigate = useNavigate();
   const [sort, setSort] = useState<SortKey>("newest");
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -58,6 +65,19 @@ export default function Explore() {
   }, [searchOpen, query]);
 
   const items = data?.items ?? [];
+
+  // An `<a>`/`<Link>` cannot legally wrap a `<tr>` (invalid HTML, misrenders
+  // in a real browser) — the row itself is the click/keyboard target instead,
+  // navigated imperatively via `useNavigate()`.
+  function goToToken(address: string) {
+    navigate(`/token/${address}`);
+  }
+  function onRowKeyDown(event: ReactKeyboardEvent<HTMLTableRowElement>, address: string) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      goToToken(address);
+    }
+  }
 
   return (
     <div className="p-6 text-slate-100">
@@ -109,21 +129,19 @@ export default function Explore() {
               <th className="pb-2 font-normal">Token</th>
               <th className="pb-2 font-normal">Price</th>
               <th className="pb-2 font-normal">
-                <button type="button" onClick={() => setSort("marketCap")} className={sort === "marketCap" ? "font-semibold text-white" : ""}>
+                <button type="button" onClick={() => setSort("price")} className={sort === "price" ? "font-semibold text-white" : ""}>
                   Market cap
                 </button>
               </th>
+              {/* Display-only: B's `/tokens` sort has no `volume24h` key. */}
+              <th className="pb-2 font-normal">24h volume</th>
+              {/* Display-only: B's `/tokens` sort has no `priceChange24h` key. */}
+              <th className="pb-2 font-normal">24h change</th>
               <th className="pb-2 font-normal">
-                <button type="button" onClick={() => setSort("volume24h")} className={sort === "volume24h" ? "font-semibold text-white" : ""}>
-                  24h volume
+                <button type="button" onClick={() => setSort("holders")} className={sort === "holders" ? "font-semibold text-white" : ""}>
+                  Holders
                 </button>
               </th>
-              <th className="pb-2 font-normal">
-                <button type="button" onClick={() => setSort("priceChange24h")} className={sort === "priceChange24h" ? "font-semibold text-white" : ""}>
-                  24h change
-                </button>
-              </th>
-              <th className="pb-2 font-normal">Holders</th>
               <th className="pb-2 font-normal">
                 <button type="button" onClick={() => setSort("newest")} className={sort === "newest" ? "font-semibold text-white" : ""}>
                   Age
@@ -133,27 +151,32 @@ export default function Explore() {
           </thead>
           <tbody>
             {items.map((item) => (
-              <Link key={item.address} to={`/token/${item.address}`} className="contents">
-                <tr className="cursor-pointer hover:bg-slate-900">
-                  <td className="py-2">
-                    <div className="flex items-center gap-2">
-                      <img src={item.logo} alt="" className="h-6 w-6 rounded-full" />
-                      <div>
-                        <div>{item.name}</div>
-                        <div className="text-slate-500">{item.symbol}</div>
-                      </div>
+              <tr
+                key={item.address}
+                role="link"
+                tabIndex={0}
+                onClick={() => goToToken(item.address)}
+                onKeyDown={(event) => onRowKeyDown(event, item.address)}
+                className="cursor-pointer hover:bg-slate-900"
+              >
+                <td className="py-2">
+                  <div className="flex items-center gap-2">
+                    <img src={item.logo} alt="" className="h-6 w-6 rounded-full" />
+                    <div>
+                      <div>{item.name}</div>
+                      <div className="text-slate-500">{item.symbol}</div>
                     </div>
-                  </td>
-                  <td>{formatDecimalString(item.price)}</td>
-                  <td>{formatDecimalString(item.marketCap)}</td>
-                  <td>{formatDecimalString(item.volume24h)}</td>
-                  <td>
-                    {item.priceChangeBps24h == null ? "—" : formatPct(item.priceChangeBps24h / 100)}
-                  </td>
-                  <td>{item.holderCount}</td>
-                  <td>{formatAge(Number(item.launchTimestamp))}</td>
-                </tr>
-              </Link>
+                  </div>
+                </td>
+                <td>{formatDecimalString(item.price)}</td>
+                <td>{formatDecimalString(item.marketCap)}</td>
+                <td>{formatDecimalString(item.volume24h)}</td>
+                <td>
+                  {item.priceChangeBps24h == null ? "—" : formatPct(item.priceChangeBps24h / 100)}
+                </td>
+                <td>{item.holderCount}</td>
+                <td>{formatAge(Number(item.launchTimestamp))}</td>
+              </tr>
             ))}
           </tbody>
         </table>

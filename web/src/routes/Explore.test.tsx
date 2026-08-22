@@ -53,7 +53,10 @@ describe("Explore", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /market cap/i }));
 
-    await waitFor(() => expect(seenSorts).toEqual(["newest", "marketCap"]));
+    // "Market cap" sorts via B's real `price` sort key (equivalent ordering:
+    // every token's supply is a fixed 1e9), not a `marketCap` key B's
+    // `/tokens` `parseSort` doesn't recognize.
+    await waitFor(() => expect(seenSorts).toEqual(["newest", "price"]));
   });
 
   it("navigates to the token detail route when a row is clicked", async () => {
