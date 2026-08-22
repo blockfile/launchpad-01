@@ -13,6 +13,11 @@ export function parseInterval(raw: string | undefined): Interval | undefined {
   return raw && VALID_INTERVALS.has(raw) ? (raw as Interval) : undefined;
 }
 
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+export function isAddressLike(value: string): boolean {
+  return ADDRESS_RE.test(value);
+}
+
 /** Structural row shape `toSummary` needs — deliberately not `typeof
  * tokens.$inferSelect` (that type only exists via the `ponder:schema` virtual
  * module). Any object with at least these fields satisfies it, including the

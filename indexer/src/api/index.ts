@@ -1,8 +1,8 @@
-import { and, asc, desc, eq, gte, lte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, lte, lt, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "ponder:api";
-import { candles, holders, tokens, trades } from "ponder:schema";
-import { parseInterval, parseSort, toSummary } from "./helpers";
+import { candles, dexConfigs, holders, launchConfigs, tokens, trades } from "ponder:schema";
+import { isAddressLike, parseInterval, parseSort, toSummary } from "./helpers";
 import { clampLimit, decodeCursor, encodeCursor } from "../lib/pagination";
 import { formatPrice18 } from "../lib/price";
 import { priceChangeBps } from "../lib/stats";
@@ -237,6 +237,109 @@ app.get("/tokens/:address/holders/count", async (c) => {
   const address = c.req.param("address").toLowerCase() as `0x${string}`;
   const [row] = await db.select({ holderCount: tokens.holderCount }).from(tokens).where(eq(tokens.address, address)).limit(1);
   return c.json({ count: row?.holderCount ?? 0 });
+});
+
+app.get("/search", async (c) => {
+  const q = (c.req.query("q") ?? "").trim();
+  if (!q) return c.json({ items: [] });
+
+  if (isAddressLike(q)) {
+    const [row] = await db.select().from(tokens).where(eq(tokens.address, q.toLowerCase() as `0x${string}`)).limit(1);
+    return c.json({ items: row ? [toSummary(row)] : [] });
+  }
+
+  const rows = await db
+    .select()
+    .from(tokens)
+    .where(or(ilike(tokens.name, `%${q}%`), ilike(tokens.symbol, `%${q}%`)))
+    .orderBy(desc(tokens.launchTimestamp))
+    .limit(25);
+  return c.json({ items: rows.map(toSummary) });
+});
+
+app.get("/stats", async (c) => {
+  const [tokenStats] = await db.select({ tokensLaunched: sql<number>`count(*)` }).from(tokens);
+  const [tradeStats] = await db
+    .select({
+      totalTrades: sql<number>`count(*)`,
+      totalVolumeQuote: sql<string>`coalesce(sum(${trades.quoteAmountRaw}), 0)`,
+    })
+    .from(trades);
+  return c.json({
+    tokensLaunched: Number(tokenStats?.tokensLaunched ?? 0),
+    totalTrades: Number(tradeStats?.totalTrades ?? 0),
+    totalVolumeQuote: String(tradeStats?.totalVolumeQuote ?? "0"),
+  });
+});
+
+app.get("/launch-configs", async (c) => {
+  const [enabledLaunchConfigs, enabledDexConfigs] = await Promise.all([
+    db.select({ id: launchConfigs.id }).from(launchConfigs).where(eq(launchConfigs.enabled, true)),
+    db.select({ id: dexConfigs.id }).from(dexConfigs).where(eq(dexConfigs.enabled, true)),
+  ]);
+  return c.json({
+    launchConfigIds: enabledLaunchConfigs.map((r) => Number(r.id)),
+    dexIds: enabledDexConfigs.map((r) => Number(r.id)),
+  });
+});
+
+// Compound keyset cursor: order is (balance DESC, tokenAddress DESC) — a
+// wallet can hold multiple tokens with equal balances (most commonly two
+// zero-ish dust balances, but not limited to that), and a single-column
+// `lt(balance, v)` cursor would drop every holding tied with the cursor's
+// balance once they straddle a page boundary, same reasoning as
+// /tokens/:address/holders above.
+app.get("/wallets/:address/holdings", async (c) => {
+  const wallet = c.req.param("address").toLowerCase() as `0x${string}`;
+  const limit = clampLimit(c.req.query("limit"));
+  const cursor = decodeCursor(c.req.query("cursor"));
+  const where = cursor
+    ? and(
+        eq(holders.holderAddress, wallet),
+        gte(holders.balance, 1n),
+        or(
+          lt(holders.balance, BigInt(cursor.v)),
+          and(eq(holders.balance, BigInt(cursor.v)), lt(holders.tokenAddress, cursor.a as `0x${string}`)),
+        ),
+      )
+    : and(eq(holders.holderAddress, wallet), gte(holders.balance, 1n));
+
+  const rows = await db
+    .select({
+      tokenAddress: holders.tokenAddress,
+      balance: holders.balance,
+      name: tokens.name,
+      symbol: tokens.symbol,
+      logo: tokens.logo,
+      lastPrice18: tokens.lastPrice18,
+      decimals: tokens.decimals,
+    })
+    .from(holders)
+    .innerJoin(tokens, eq(tokens.address, holders.tokenAddress))
+    .where(where)
+    .orderBy(desc(holders.balance), desc(holders.tokenAddress))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  const nextCursor = hasMore && last ? encodeCursor({ v: String(last.balance), a: last.tokenAddress }) : null;
+
+  return c.json({
+    items: page.map((r) => ({
+      tokenAddress: r.tokenAddress,
+      name: r.name,
+      symbol: r.symbol,
+      logo: r.logo,
+      balance: r.balance.toString(),
+      // Divides by the token's own `decimals`, not a hardcoded 1e18 — price18
+      // already normalizes decimals out, but `balance` is raw (10^decimals-
+      // scaled), so hardcoding 1e18 would silently misprice any non-18-decimal
+      // token's holdings, matching the marketCap fix in `toSummary`.
+      valueEth: r.lastPrice18 !== null ? formatPrice18((r.balance * r.lastPrice18) / 10n ** BigInt(r.decimals)) : null,
+    })),
+    nextCursor,
+  });
 });
 
 export default app;
