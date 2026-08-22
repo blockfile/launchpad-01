@@ -28,6 +28,16 @@ vi.mock("lightweight-charts", () => ({
   createChart: h.createChart,
 }));
 
+// TradePanel owns a whole quote/pool-resolution flow (live `slot0`/`balanceOf`
+// chain reads) with its own test; here it's a plain stub that echoes the
+// address it was handed, so this page test can prove Trade wires it to the
+// route token without pulling a WagmiProvider + real contract reads into scope.
+vi.mock("../components/TradePanel", () => ({
+  TradePanel: ({ tokenAddress }: { tokenAddress?: string }) => (
+    <div data-testid="trade-panel">panel:{tokenAddress}</div>
+  ),
+}));
+
 function renderTrade() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -136,9 +146,9 @@ describe("Trade", () => {
     expect(screen.getByText(/50(\.00)?%/)).toBeInTheDocument();
   });
 
-  it("renders the TradePanel placeholder slot", async () => {
+  it("mounts the TradePanel wired to the route token address", async () => {
     renderTrade();
     await screen.findByText("Pons Test Token");
-    expect(screen.getByTestId("trade-panel-placeholder")).toBeInTheDocument();
+    expect(screen.getByTestId("trade-panel")).toHaveTextContent(`panel:${ADDRESS}`);
   });
 });

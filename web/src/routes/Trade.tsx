@@ -3,6 +3,7 @@ import { useParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { fetchToken, fetchCandles, fetchTrades, fetchHolders } from "../lib/indexer/client";
 import { PriceChart } from "../components/PriceChart";
+import { TradePanel } from "../components/TradePanel";
 import { formatAge, shortAddress } from "../lib/format";
 
 type Timeframe = "1m" | "5m" | "1h" | "1d";
@@ -26,22 +27,6 @@ function formatDecimalString(value: string | null): string {
 // this skips `formatPct`'s signed "+50.00%" prefix.
 function formatSharePct(pct: number): string {
   return `${pct.toFixed(2)}%`;
-}
-
-/**
- * Placeholder slot for Task 11's real buy/sell panel. This task only shells
- * the trade page layout against B's read endpoints — quote/swap logic is
- * explicitly out of scope here.
- */
-function TradePanel() {
-  return (
-    <div
-      data-testid="trade-panel-placeholder"
-      className="h-fit rounded border border-slate-700 p-4 text-sm text-slate-500"
-    >
-      Buy / sell — coming soon.
-    </div>
-  );
 }
 
 export default function Trade() {
@@ -194,7 +179,7 @@ export default function Trade() {
         </div>
       </div>
 
-      <TradePanel />
+      <TradePanel tokenAddress={address as `0x${string}` | undefined} />
     </div>
   );
 }
