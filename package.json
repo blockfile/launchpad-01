@@ -1,1 +1,16 @@
-{ "name": "launchpad-01", "private": true, "packageManager": "pnpm@9.15.4" }
+{
+  "name": "launchpad-01",
+  "private": true,
+  "workspaces": ["packages/*", "indexer", "web"],
+  "scripts": {
+    "dev": "npm run dev --workspace web",
+    "build": "npm run build --workspace web",
+    "test": "npm run test --workspace web && npm run test --workspace @launchpad/indexer",
+    "test:web": "npm run test --workspace web",
+    "test:indexer": "npm run test --workspace @launchpad/indexer",
+    "gen-abis": "node packages/shared/scripts/gen-abis.mjs"
+  },
+  "devDependencies": {
+    "vitest": "4.1.11"
+  }
+}

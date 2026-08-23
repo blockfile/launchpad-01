@@ -145,7 +145,7 @@ writeAbiFile("ERC20", "erc20Abi", [transferEvent]);
 // until/unless testnet-specific addresses are confirmed.
 //
 // Our own factory/locker are NEVER promoted from the broadcast log by default.
-// A routine `forge build` + `pnpm gen-abis` after a LOCAL-FORK rehearsal leaves
+// A routine `forge build` + `npm run gen-abis` after a LOCAL-FORK rehearsal leaves
 // a real-looking `broadcast/Deploy.s.sol/4663/run-latest.json` (chain 4663 is
 // the real mainnet id, deployer = an Anvil default), and silently promoting it
 // would flip the committed `addresses/4663.json` factory/locker from their

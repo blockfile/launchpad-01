@@ -189,10 +189,10 @@ describe("indexer against a local Anvil deploy of sub-project A", () => {
 
     // 4) Start Ponder against the local fork, scanning only from H forward.
     ponder = spawn(
-      `pnpm --filter @launchpad/indexer exec ponder start --schema test_${Date.now()}`,
+      `npx ponder start --schema test_${Date.now()}`,
       {
         cwd: INDEXER_ROOT,
-        shell: true, // pnpm resolves as pnpm.CMD on Windows — needs a shell
+        shell: true, // npx/ponder resolve as .cmd on Windows — needs a shell
         env: {
           ...process.env,
           PATH: PATH_WITH_FOUNDRY,

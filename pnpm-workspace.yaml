@@ -1,6 +1,0 @@
-packages:
-  - "packages/*"
-  - "indexer"
-  - "web"
-allowBuilds:
-  esbuild: true

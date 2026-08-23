@@ -4,13 +4,26 @@ The launchpad frontend: Explore (`/`), Launch (`/create`), Trade (`/token/:addre
 
 There are two dev modes. Pick the one that matches what you're working on.
 
-## Mocked-B mode (default)
+## Install
+
+Install once from the repo root (npm workspaces — this installs every package):
 
 ```bash
-pnpm --filter web dev
+npm install
 ```
 
-Every list/chart/trade/holder view runs against the MSW fixtures under `src/lib/indexer/fixtures/` (the same fixtures the test suite uses). No chain and no wallet connection are required to browse Explore or Trade's read-only surfaces — B (the indexer) is entirely faked. This is the default because it's what almost every UI change should be checked against first: it's instant, has no external dependencies, and is the mode `pnpm --filter web test` runs in.
+## Mocked-B mode (default)
+
+From the repo root, or scoped to the `web` workspace:
+
+```bash
+npm run dev          # root convenience script
+npm run dev -w web   # or target the web workspace directly
+```
+
+The same pattern applies to the other scripts: `npm run build` / `npm run build -w web`, and `npm test` / `npm run test -w web`.
+
+Every list/chart/trade/holder view runs against the MSW fixtures under `src/lib/indexer/fixtures/` (the same fixtures the test suite uses). No chain and no wallet connection are required to browse Explore or Trade's read-only surfaces — B (the indexer) is entirely faked. This is the default because it's what almost every UI change should be checked against first: it's instant, has no external dependencies, and is the mode `npm test` runs in.
 
 Wallet-gated actions (Launch's submit button, Trade's buy/sell panel, Portfolio when disconnected) will still show correctly-disabled states, but actually **writing** — launching a token, or swapping — needs the second mode below, since there's no real chain behind the mocked reads.
 
@@ -35,7 +48,7 @@ This local deploy's addresses are **not** written back into `packages/shared/add
 **2. Run the automated write-flow suite against it** (Tasks 9 + 12: launch → predicted address → decoded `TokenLaunched` → `slot0` quote → real buy → real sell), from `web/`:
 
 ```bash
-FACTORY_ADDRESS=<printed LaunchFactory address> ANVIL_RPC_URL=http://127.0.0.1:8545 pnpm --filter web run test:anvil
+FACTORY_ADDRESS=<printed LaunchFactory address> ANVIL_RPC_URL=http://127.0.0.1:8545 npm run test:anvil -w web
 ```
 
 (Left unset, `test:anvil` spins up and tears down its own throwaway fork + deploy automatically via `src/test/anvil/globalSetup.ts` — the `FACTORY_ADDRESS`/`ANVIL_RPC_URL` pair above is only for pointing it at a fork you're already running yourself, e.g. so you can inspect it afterward.)
@@ -46,7 +59,7 @@ FACTORY_ADDRESS=<printed LaunchFactory address> ANVIL_RPC_URL=http://127.0.0.1:8
 VITE_LOCAL_RPC_URL=http://127.0.0.1:8545 \
 VITE_FACTORY_ADDRESS=<printed LaunchFactory address> \
 VITE_LOCKER_ADDRESS=<printed Locker address> \
-pnpm --filter web dev
+npm run dev -w web
 ```
 
 `VITE_LOCAL_RPC_URL` overrides chain 4663's transport (`src/lib/wagmi.ts`) so wagmi talks to your local fork instead of the real RPC; `VITE_FACTORY_ADDRESS`/`VITE_LOCKER_ADDRESS` override the committed addresses the same way the test suite's `FACTORY_ADDRESS` env var does.

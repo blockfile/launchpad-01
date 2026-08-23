@@ -51,7 +51,7 @@ export default defineConfig({
     globals: true,
     // The local-Anvil integration test is its own vitest project
     // (vitest.anvil.config.ts) — never collected by the default `test` run,
-    // so `pnpm --filter web test` never needs a running chain.
+    // so `npm test` never needs a running chain.
     exclude: ["**/node_modules/**", "**/dist/**", "src/test/anvil/**"],
   },
 });

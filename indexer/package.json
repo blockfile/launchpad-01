@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@launchpad/shared": "workspace:*",
+    "@launchpad/shared": "*",
     "ponder": "0.17.8",
     "viem": "2.55.19",
     "hono": "4.13.3",

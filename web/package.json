@@ -24,7 +24,7 @@
     "react-hook-form": "7.86.0",
     "zod": "4.4.3",
     "@hookform/resolvers": "5.9.1",
-    "@launchpad/shared": "workspace:*"
+    "@launchpad/shared": "*"
   },
   "devDependencies": {
     "typescript": "5.9.3",

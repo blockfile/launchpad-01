@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// A separate vitest project so `pnpm --filter web test` never requires a
+// A separate vitest project so `npm test` never requires a
 // running chain. `globalSetup` automates the local-Anvil fork bring-up +
 // A's Deploy.s.sol before collection (populating FACTORY_ADDRESS /
 // ANVIL_RPC_URL); it no-ops (→ test skips) when Foundry is absent, when
