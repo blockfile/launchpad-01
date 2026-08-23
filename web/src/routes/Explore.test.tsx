@@ -59,15 +59,32 @@ describe("Explore", () => {
     await waitFor(() => expect(seenSorts).toEqual(["newest", "price"]));
   });
 
-  it("navigates to the token detail route when a row is clicked", async () => {
+  it("navigates to the token detail route when the featured King card is clicked", async () => {
     renderExplore();
 
+    // The highest-market-cap fixture token (Pons) is lifted into the featured
+    // "King" hero at the top of the board; clicking it navigates.
     const nameCell = await screen.findByText("Pons Test Token");
     fireEvent.click(nameCell);
 
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
         "/token/0x1111111111111111111111111111111111111111",
+      ),
+    );
+  });
+
+  it("navigates to the token detail route when a grid token card is clicked", async () => {
+    renderExplore();
+
+    // The non-King fixture token (Untraded) renders as a TokenCard in the grid;
+    // clicking the shared card navigates via its own imperative handler.
+    const nameCell = await screen.findByText("Untraded Test Token");
+    fireEvent.click(nameCell);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        "/token/0x9999999999999999999999999999999999999999",
       ),
     );
   });
