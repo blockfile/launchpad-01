@@ -1,7 +1,7 @@
 import { useReadContract, useReadContracts } from "wagmi";
 import { launchFactoryAbi } from "@launchpad/shared";
 import { useQuery } from "@tanstack/react-query";
-import { resolveAddress } from "./contracts";
+import { resolveAddressOptional } from "./contracts";
 import { fetchLaunchConfigs } from "./indexer/client";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
@@ -22,7 +22,9 @@ export function usePredictedTokenAddress(args: {
   salt: `0x${string}`;
   deployer: `0x${string}` | undefined;
 }) {
-  const factory = resolveAddress(args.chainId, "factory");
+  // Render-path resolution: `undefined` (no deployed/overridden factory) must
+  // NOT throw here — it disables the read instead of blanking the app.
+  const factory = resolveAddressOptional(args.chainId, "factory");
   return useReadContract({
     address: factory,
     abi: launchFactoryAbi,
@@ -39,7 +41,7 @@ export function usePredictedTokenAddress(args: {
       args.salt,
       args.deployer ?? ZERO_ADDRESS,
     ] as const,
-    query: { enabled: Boolean(args.deployer) },
+    query: { enabled: Boolean(factory) && Boolean(args.deployer) },
   });
 }
 
@@ -51,6 +53,11 @@ export function usePredictedTokenAddress(args: {
 export interface AvailableLaunchConfigs {
   launchConfigIds: number[];
   dexIds: number[];
+  /** False when no LaunchFactory address is resolvable for this chain (no
+   * deploy, no `VITE_FACTORY_ADDRESS`). The page uses this to render a friendly
+   * "not available on this network" state instead of a dead, option-less form —
+   * the on-chain probe below is disabled in that case, never throwing. */
+  factoryConfigured: boolean;
 }
 
 const PROBE_IDS = Array.from({ length: 10 }, (_, i) => BigInt(i));
@@ -71,7 +78,11 @@ const PROBE_IDS = Array.from({ length: 10 }, (_, i) => BigInt(i));
  * on-chain probe and prefer its non-empty result over B's empty one. */
 export function useAvailableLaunchConfigs(chainId: number): AvailableLaunchConfigs {
   const indexed = useQuery({ queryKey: ["launch-configs"], queryFn: fetchLaunchConfigs, retry: false });
-  const factory = resolveAddress(chainId, "factory");
+  // Render-path resolution: no throw when the factory is unconfigured. The
+  // caller reads `factoryConfigured` and shows a friendly network state; the
+  // on-chain probe stays disabled so it never reads against a null address.
+  const factory = resolveAddressOptional(chainId, "factory");
+  const factoryConfigured = Boolean(factory);
 
   const indexedData = indexed.data;
   // B "has nothing to offer" if it errored OR resolved with an empty list in
@@ -80,19 +91,32 @@ export function useAvailableLaunchConfigs(chainId: number): AvailableLaunchConfi
   const indexedUsable =
     !!indexedData && indexedData.launchConfigIds.length > 0 && indexedData.dexIds.length > 0;
 
+  // `address` must stay a definite `0x${string}` for wagmi to infer the probe's
+  // result shape; when the factory is unconfigured the read is disabled below
+  // (and the hook returns early before `probe.data` is ever read), so the
+  // placeholder is never actually called against.
+  const probeAddress = factory ?? ZERO_ADDRESS;
   const probe = useReadContracts({
     contracts: PROBE_IDS.flatMap(
       (id) =>
         [
-          { address: factory, abi: launchFactoryAbi, functionName: "getLaunchConfig", args: [id] },
-          { address: factory, abi: launchFactoryAbi, functionName: "getDexConfig", args: [id] },
+          { address: probeAddress, abi: launchFactoryAbi, functionName: "getLaunchConfig", args: [id] },
+          { address: probeAddress, abi: launchFactoryAbi, functionName: "getDexConfig", args: [id] },
         ] as const,
     ),
-    query: { enabled: indexed.isError || !indexedUsable },
+    query: { enabled: factoryConfigured && (indexed.isError || !indexedUsable) },
   });
 
+  // No resolvable factory ⇒ nothing to probe on-chain; report it so the page
+  // can render a "not available on this network" state rather than an empty,
+  // option-less form. (B's `/launch-configs` may still have answered, but a
+  // launch needs the on-chain factory to submit against.)
+  if (!factoryConfigured) {
+    return { launchConfigIds: [], dexIds: [], factoryConfigured: false };
+  }
+
   // B's answer wins only when it is actually usable (non-empty in both lists).
-  if (indexedUsable) return indexedData;
+  if (indexedUsable) return { ...indexedData, factoryConfigured };
 
   // Otherwise prefer the on-chain probe's result, but only once it has resolved
   // to something non-empty — until then fall back to B's (possibly empty) data.
@@ -100,9 +124,10 @@ export function useAvailableLaunchConfigs(chainId: number): AvailableLaunchConfi
     const probed: AvailableLaunchConfigs = {
       launchConfigIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2]?.result?.enabled).map(Number),
       dexIds: PROBE_IDS.filter((_, i) => probe.data?.[i * 2 + 1]?.result?.enabled).map(Number),
+      factoryConfigured,
     };
     if (probed.launchConfigIds.length > 0 || probed.dexIds.length > 0) return probed;
   }
 
-  return indexedData ?? { launchConfigIds: [], dexIds: [] };
+  return { ...(indexedData ?? { launchConfigIds: [], dexIds: [] }), factoryConfigured };
 }

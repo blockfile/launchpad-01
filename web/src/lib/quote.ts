@@ -1,6 +1,6 @@
 import { useReadContract } from "wagmi";
 import { launchFactoryAbi, uniswapV3FactoryAbi, uniswapV3PoolAbi } from "@launchpad/shared";
-import { resolveAddress } from "./contracts";
+import { resolveAddressOptional } from "./contracts";
 
 const Q96 = 2n ** 96n;
 const FEE_DENOMINATOR = 1_000_000n;
@@ -61,6 +61,11 @@ export interface TokenPool {
    * `exactInputSingle` ABI shape the token's router expects. `false` for the
    * live default deployment (SwapRouter02, no deadline). */
   routerRequiresDeadline?: boolean;
+  /** False when no LaunchFactory address is resolvable for this chain (no
+   * deploy, no `VITE_FACTORY_ADDRESS`). All the pool reads below are disabled in
+   * that case (never a throw during render); the Trade panel surfaces a "not
+   * available on this network" state rather than a dead form. */
+  factoryConfigured: boolean;
   /** `getLaunchedToken(...).exists` — false ⇒ token failed provenance, refuse to trade. */
   exists: boolean;
   /** True when the token exists but its LIVE `getDexConfig(dexId).factory` no
@@ -101,14 +106,19 @@ export function useTokenPool(
    * config drifted — never to override a live pool. */
   fallbackPool?: `0x${string}`,
 ): TokenPool {
-  const factory = resolveAddress(chainId, "factory");
+  // Render-path resolution: an unconfigured factory (no deploy, no
+  // VITE_FACTORY_ADDRESS) must NOT throw here — it would blank the whole Trade
+  // page. Resolve optionally and gate every read below on it; the panel reads
+  // `factoryConfigured` to show a friendly network state instead.
+  const factory = resolveAddressOptional(chainId, "factory");
+  const factoryConfigured = Boolean(factory);
 
   const launched = useReadContract({
     address: factory,
     abi: launchFactoryAbi,
     functionName: "getLaunchedToken",
     args: [tokenAddress ?? ZERO_ADDRESS],
-    query: { enabled: Boolean(tokenAddress) },
+    query: { enabled: factoryConfigured && Boolean(tokenAddress) },
   });
   const token = launched.data as LaunchedTokenStruct | undefined;
   const exists = Boolean(token?.exists);
@@ -176,6 +186,7 @@ export function useTokenPool(
     dexId: token?.dexId,
     swapRouter,
     routerRequiresDeadline,
+    factoryConfigured,
     exists,
     poolUnavailable,
     restrictionsEndBlock: token?.restrictionsEndBlock,

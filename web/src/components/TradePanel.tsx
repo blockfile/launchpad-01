@@ -21,6 +21,8 @@ import {
 import { resolveAddress } from "../lib/contracts";
 import { buildBuyCall, buildSellCall } from "../lib/swap";
 import { BusyButton } from "./ui/BusyButton";
+import { LaunchpadUnavailableNotice } from "./NetworkNotice";
+import { WrongNetworkBanner } from "./WrongNetworkBanner";
 import { notify } from "../lib/toast";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
@@ -279,6 +281,18 @@ export function TradePanel({
 
   if (!tokenAddress) return null;
 
+  // No LaunchFactory resolves for this chain (no deploy, no VITE_FACTORY_ADDRESS,
+  // or the wallet is on the wrong network). `useTokenPool` disabled every read
+  // rather than throwing, so explain it — and offer the network switch — instead
+  // of rendering a panel wired to a factory that doesn't exist.
+  if (!pool.factoryConfigured) {
+    return (
+      <div data-testid="trade-panel" className="h-fit">
+        <LaunchpadUnavailableNotice />
+      </div>
+    );
+  }
+
   if (pool.isLoading && !pool.exists) {
     return (
       <div
@@ -324,6 +338,10 @@ export function TradePanel({
       data-testid="trade-panel"
       className="h-fit rounded border border-slate-700 p-4 text-sm text-slate-100"
     >
+      <div className="mb-4 empty:hidden">
+        <WrongNetworkBanner />
+      </div>
+
       {/* Buy / sell tabs */}
       <div className="mb-4 grid grid-cols-2 gap-2">
         {(["buy", "sell"] as const).map((s) => (

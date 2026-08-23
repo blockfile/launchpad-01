@@ -1,9 +1,10 @@
 import { http } from "wagmi";
 import { defineChain } from "viem";
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { ROBINHOOD_CHAIN_ID, ROBINHOOD_TESTNET_CHAIN_ID } from "./chains";
 
 export const robinhoodChain = defineChain({
-  id: 4663,
+  id: ROBINHOOD_CHAIN_ID,
   name: "Robinhood Chain",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
@@ -11,7 +12,7 @@ export const robinhoodChain = defineChain({
 });
 
 export const robinhoodTestnet = defineChain({
-  id: 46630,
+  id: ROBINHOOD_TESTNET_CHAIN_ID,
   name: "Robinhood Chain Testnet",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.testnet.chain.robinhood.com"] } },

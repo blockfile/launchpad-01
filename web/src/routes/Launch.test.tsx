@@ -34,11 +34,15 @@ const h = vi.hoisted(() => ({
   },
   predicted: { current: undefined as string | undefined },
   launchFee: { current: 0n as bigint | undefined },
+  // The optional (render-path) factory resolution. `undefined` ⇒ no factory
+  // configured for this chain ⇒ the page shows its "not available" notice.
+  factory: { current: undefined as `0x${string}` | undefined },
 }));
 
 vi.mock("wagmi", () => ({
-  useAccount: () => ({ address: CONNECTED }),
+  useAccount: () => ({ address: CONNECTED, isConnected: true, chainId: 4663 }),
   useChainId: () => 4663,
+  useSwitchChain: () => ({ switchChain: vi.fn(), isPending: false }),
   useReadContract: () => ({ data: h.launchFee.current }),
   useWriteContract: () => ({
     writeContract: h.writeContract,
@@ -61,11 +65,16 @@ vi.mock("wagmi", () => ({
 
 vi.mock("../lib/contracts", () => ({
   resolveAddress: () => FACTORY,
+  resolveAddressOptional: () => h.factory.current,
 }));
 
 vi.mock("../lib/launchConfig", () => ({
   usePredictedTokenAddress: () => ({ data: h.predicted.current }),
-  useAvailableLaunchConfigs: () => ({ launchConfigIds: [0], dexIds: [0] }),
+  useAvailableLaunchConfigs: () => ({
+    launchConfigIds: [0],
+    dexIds: [0],
+    factoryConfigured: Boolean(h.factory.current),
+  }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -142,9 +151,25 @@ beforeEach(() => {
   h.state.receiptError = undefined;
   h.predicted.current = PREDICTED;
   h.launchFee.current = LAUNCH_FEE;
+  h.factory.current = FACTORY;
 });
 
 describe("Launch", () => {
+  it("renders a friendly 'not available on this network' notice (never a blank screen or dead form) when no factory resolves", () => {
+    // The default local-dev state: no deploy and no VITE_FACTORY_ADDRESS, so the
+    // optional render-path resolution yields undefined. Pre-fix, the throwing
+    // resolveAddress blanked the whole app; now the page explains itself.
+    h.factory.current = undefined;
+    render(<Launch />);
+
+    expect(screen.getByTestId("network-notice")).toBeInTheDocument();
+    expect(screen.getByText(/not available on this network/i)).toBeInTheDocument();
+    expect(screen.getByText(/VITE_FACTORY_ADDRESS/)).toBeInTheDocument();
+    // The dead form must NOT render.
+    expect(screen.queryByLabelText(/^name/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /review launch/i })).not.toBeInTheDocument();
+  });
+
   it("shows the predicted address only once name, symbol and logo are all set", async () => {
     render(<Launch />);
     expect(screen.queryByTestId("predicted-address")).not.toBeInTheDocument();

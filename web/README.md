@@ -4,6 +4,54 @@ The launchpad frontend: Explore (`/`), Launch (`/create`), Trade (`/token/:addre
 
 There are two dev modes. Pick the one that matches what you're working on.
 
+## Why is my ETH / Launch not showing?
+
+Short answer: **plain `npm run dev` is browse-only.** It serves Explore and Trade's
+read views from fixtures with no chain behind them, so:
+
+- The Launch page shows a calm **"not available on this network"** notice instead of a
+  form — there is no deployed `LaunchFactory` for chain 4663 in the committed config
+  (`factory` is `null` in `packages/shared/addresses/4663.json` until a real deploy), and
+  no `VITE_FACTORY_ADDRESS` override is set. This is expected, not a bug. (It used to
+  crash to a blank screen; it no longer does.)
+- Trade's buy/sell panel shows the same notice for the same reason.
+- Your wallet **"has no ETH"** because it is either on the wrong network, or reading the
+  public Robinhood RPC where that account genuinely holds 0. If your wallet is connected
+  to a chain the app isn't wired for (anything other than 4663 / 46630), Launch and Trade
+  show a **"Wrong network — switch to Robinhood Chain"** banner with a one-click switch.
+
+To actually **Launch / Trade and see a balance**, you need a chain where (a) a factory is
+deployed and (b) your wallet holds ETH. The fastest path is a local Anvil fork — spelled
+out exactly below.
+
+### Local-dev Launch/Trade in four commands
+
+```bash
+# 1. Fork mainnet locally (Foundry is at ~/.foundry/bin, not on PATH here):
+export PATH="$PATH:/c/Users/Ivan/.foundry/bin"
+anvil --fork-url https://rpc.mainnet.chain.robinhood.com &
+
+# 2. Deploy the contracts to the fork; NOTE the printed LaunchFactory + Locker addresses:
+cd contracts
+forge script script/Deploy.s.sol --rpc-url http://127.0.0.1:8545 --broadcast \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+
+# 3. Run the dev server pointed at the fork, with the printed addresses:
+VITE_LOCAL_RPC_URL=http://127.0.0.1:8545 \
+VITE_FACTORY_ADDRESS=<printed LaunchFactory address> \
+VITE_LOCKER_ADDRESS=<printed Locker address> \
+npm run dev -w web
+```
+
+**4. In MetaMask:** add a network with **Chain ID `4663`** and **RPC URL
+`http://127.0.0.1:8545`**, then import an Anvil default account (e.g. private key
+`0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`, which holds 10000
+ETH on the fork). Connect it via the header's Connect button. Launch and Trade now show
+real forms wired to your fork, and your balance shows the fork's ETH.
+
+The full mechanics of each step (why the addresses flow via env vars, how to read them
+back, the automated test harness) are in **Local-Anvil write-flow mode** below.
+
 ## Install
 
 Install once from the repo root (npm workspaces — this installs every package):
@@ -25,7 +73,12 @@ The same pattern applies to the other scripts: `npm run build` / `npm run build 
 
 Every list/chart/trade/holder view runs against the MSW fixtures under `src/lib/indexer/fixtures/` (the same fixtures the test suite uses). No chain and no wallet connection are required to browse Explore or Trade's read-only surfaces — B (the indexer) is entirely faked. This is the default because it's what almost every UI change should be checked against first: it's instant, has no external dependencies, and is the mode `npm test` runs in.
 
-Wallet-gated actions (Launch's submit button, Trade's buy/sell panel, Portfolio when disconnected) will still show correctly-disabled states, but actually **writing** — launching a token, or swapping — needs the second mode below, since there's no real chain behind the mocked reads.
+This mode is **browse-only**: Explore/Trade read views work against fixtures, but there is
+no chain behind them, so Launch and Trade's write surfaces render a "not available on this
+network" notice (no factory is configured for chain 4663 here — see [Why is my ETH / Launch
+not showing?](#why-is-my-eth--launch-not-showing) above), and wallet balances are whatever
+the public RPC reports. Actually **writing** — launching a token, or swapping — and seeing a
+funded balance both need the second mode below.
 
 ## Local-Anvil write-flow mode
 

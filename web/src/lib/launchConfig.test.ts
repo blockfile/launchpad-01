@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useReadContract, useReadContracts } from "wagmi";
+import { resolveAddressOptional } from "./contracts";
 import { fetchLaunchConfigs } from "./indexer/client";
 import { usePredictedTokenAddress, useAvailableLaunchConfigs } from "./launchConfig";
 
@@ -16,6 +17,7 @@ vi.mock("wagmi", () => ({
 }));
 vi.mock("./contracts", () => ({
   resolveAddress: vi.fn(() => "0x1234567890123456789012345678901234567890"),
+  resolveAddressOptional: vi.fn(() => "0x1234567890123456789012345678901234567890"),
 }));
 vi.mock("./indexer/client", () => ({
   fetchLaunchConfigs: vi.fn(),
@@ -90,7 +92,9 @@ describe("useAvailableLaunchConfigs", () => {
       Array.from({ length: 10 }, (_, i) => BigInt(i)).flatMap((id) => [id, id]),
     );
 
-    await waitFor(() => expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0] }));
+    await waitFor(() =>
+      expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0], factoryConfigured: true }),
+    );
   });
 
   it("falls back to the on-chain probe when B resolves 200 with EMPTY lists (deploy→index-lag window), preferring the probe's non-empty result", async () => {
@@ -114,6 +118,24 @@ describe("useAvailableLaunchConfigs", () => {
     });
 
     // Old behavior returned B's empty {[],[]}; the fix returns the probe's ids.
-    await waitFor(() => expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0] }));
+    await waitFor(() =>
+      expect(result.current).toEqual({ launchConfigIds: [0], dexIds: [0], factoryConfigured: true }),
+    );
+  });
+
+  it("reports factoryConfigured=false and keeps the on-chain probe disabled when no factory address resolves", async () => {
+    // The default local-dev state: no deploy and no VITE_FACTORY_ADDRESS, so
+    // `resolveAddressOptional` yields undefined. The hook must NOT throw (that
+    // would blank the page); it reports the unconfigured state and never probes
+    // an on-chain read against a null address.
+    vi.mocked(resolveAddressOptional).mockReturnValueOnce(undefined);
+    vi.mocked(fetchLaunchConfigs).mockResolvedValue({ launchConfigIds: [], dexIds: [] });
+    vi.mocked(useReadContracts).mockReturnValue({ data: undefined } as never);
+
+    const { result } = renderHook(() => useAvailableLaunchConfigs(4663), { wrapper: createWrapper() });
+
+    expect(result.current).toEqual({ launchConfigIds: [], dexIds: [], factoryConfigured: false });
+    const call = vi.mocked(useReadContracts).mock.calls.at(-1)?.[0];
+    expect(call?.query?.enabled).toBe(false);
   });
 });

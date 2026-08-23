@@ -41,3 +41,28 @@ export function resolveAddress(chainId: number, key: keyof ChainAddresses): `0x$
   }
   return resolved as `0x${string}`;
 }
+
+/** Non-throwing counterpart of {@link resolveAddress} for RENDER paths.
+ *
+ * Returns the resolved address, or `undefined` when the chain is unknown, the
+ * committed/overridden address is null/unset, or it is the zero address — the
+ * exact three cases {@link resolveAddress} throws on. Same env-override
+ * precedence and zero-address rejection, just no throw.
+ *
+ * A render-time hook (the Launch/Trade contract reads) MUST NOT throw: an
+ * uncaught throw during render unmounts the whole React tree, blanking the app.
+ * So those hooks resolve with this variant and gate their wagmi reads on the
+ * result (`query.enabled`), surfacing a friendly "not available on this
+ * network" state instead of crashing. Keep the throwing {@link resolveAddress}
+ * for imperative WRITE paths, where a null address must hard-fail loudly before
+ * a transaction is ever sent. */
+export function resolveAddressOptional(
+  chainId: number,
+  key: keyof ChainAddresses,
+): `0x${string}` | undefined {
+  const chain = addresses[chainId];
+  if (!chain) return undefined;
+  const resolved = ENV_OVERRIDES[key] || chain[key];
+  if (!resolved || /^0x0{40}$/i.test(resolved)) return undefined;
+  return resolved as `0x${string}`;
+}

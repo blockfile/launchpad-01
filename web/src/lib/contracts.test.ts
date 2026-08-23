@@ -17,7 +17,7 @@ vi.mock("@launchpad/shared", () => ({
   },
 }));
 
-import { resolveAddress } from "./contracts";
+import { resolveAddress, resolveAddressOptional } from "./contracts";
 
 describe("resolveAddress", () => {
   it("returns a valid configured address", () => {
@@ -34,5 +34,25 @@ describe("resolveAddress", () => {
 
   it("rejects the zero address so it can never flow into a swap/router call", () => {
     expect(() => resolveAddress(999, "swapRouter")).toThrow(/zero address/i);
+  });
+});
+
+describe("resolveAddressOptional", () => {
+  it("returns a valid configured address, same as the throwing variant", () => {
+    expect(resolveAddressOptional(999, "weth")).toBe(
+      "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    );
+  });
+
+  it("returns undefined (never throws) for an unknown chain — a render path must not blank the app", () => {
+    expect(resolveAddressOptional(12345, "weth")).toBeUndefined();
+  });
+
+  it("returns undefined for a missing (null) address instead of throwing", () => {
+    expect(resolveAddressOptional(999, "locker")).toBeUndefined();
+  });
+
+  it("rejects the zero address by returning undefined (same guard as the throwing variant, minus the throw)", () => {
+    expect(resolveAddressOptional(999, "swapRouter")).toBeUndefined();
   });
 });

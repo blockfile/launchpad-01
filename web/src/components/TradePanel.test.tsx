@@ -30,6 +30,11 @@ const h = vi.hoisted(() => {
     TOKEN: addr("70"),
     ZERO: ("0x" + "00".repeat(20)) as `0x${string}`,
     account: addr("11") as `0x${string}` | undefined,
+    // The connected wallet's chain and the optional factory resolution — both
+    // overridable per-test to exercise the wrong-network / no-factory states.
+    chainId: 4663 as number | undefined,
+    switchChain: vi.fn(),
+    factoryAddr: addr("f0") as `0x${string}` | undefined,
     balance: 8n * E, // 8 WETH / 8 tokens
     allowance: 0n,
     blockNumber: 100n as bigint | undefined,
@@ -47,8 +52,9 @@ const h = vi.hoisted(() => {
 });
 
 vi.mock("wagmi", () => ({
-  useAccount: () => ({ address: h.account }),
+  useAccount: () => ({ address: h.account, isConnected: Boolean(h.account), chainId: h.chainId }),
   useChainId: () => 4663,
+  useSwitchChain: () => ({ switchChain: h.switchChain, isPending: false }),
   useConfig: () => ({}),
   useWriteContract: () => ({ writeContractAsync: h.writeContractAsync }),
   useBlockNumber: () => ({ data: h.blockNumber }),
@@ -95,7 +101,11 @@ vi.mock("wagmi/actions", () => ({
 }));
 
 vi.mock("../lib/contracts", () => ({
+  // weth (a WRITE-path venue address) resolves via the throwing variant.
   resolveAddress: () => h.FACTORY,
+  // The factory read is a RENDER path: it resolves optionally. `undefined` here
+  // simulates no deploy / no VITE_FACTORY_ADDRESS for the connected chain.
+  resolveAddressOptional: () => h.factoryAddr,
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -116,7 +126,10 @@ beforeEach(() => {
   h.waitForReceipt.mockResolvedValue({ status: "success" });
   h.notify.mockReset();
   invalidateSpy.mockClear();
+  h.switchChain.mockReset();
   h.account = ("0x" + "11".repeat(20)) as `0x${string}`;
+  h.chainId = 4663;
+  h.factoryAddr = ("0x" + "f0".repeat(20)) as `0x${string}`;
   h.blockNumber = 100n;
   h.restrictionsEndBlock = 1000n;
   h.exists = true;
@@ -191,6 +204,38 @@ describe("TradePanel", () => {
 
     fireEvent.change(amountInput(), { target: { value: "1" } });
     expect(swap).toBeEnabled();
+  });
+
+  it("shows a 'not available on this network' notice (never a crash or dead panel) when no factory resolves", () => {
+    // No deploy / no VITE_FACTORY_ADDRESS for this chain ⇒ useTokenPool disabled
+    // every read instead of throwing. The panel must explain it, not render a
+    // trade form wired to a non-existent factory.
+    h.factoryAddr = undefined;
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+
+    expect(screen.getByTestId("network-notice")).toBeInTheDocument();
+    expect(screen.getByText(/not available on this network/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/amount/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /swap/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a wrong-network switch prompt when the wallet is on an unsupported chain, and switches to 4663 on click", () => {
+    h.chainId = 1; // wallet on Ethereum mainnet — not in the app's supported set
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+
+    const banner = screen.getByTestId("wrong-network-banner");
+    expect(banner).toBeInTheDocument();
+    // The rest of the panel still renders (trading isn't hard-blocked here).
+    expect(screen.getByLabelText(/amount/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /switch to robinhood chain/i }));
+    expect(h.switchChain).toHaveBeenCalledWith({ chainId: 4663 });
+  });
+
+  it("shows no wrong-network banner on a supported chain", () => {
+    h.chainId = 4663;
+    renderPanel(<TradePanel tokenAddress={h.TOKEN} />);
+    expect(screen.queryByTestId("wrong-network-banner")).not.toBeInTheDocument();
   });
 
   it("refuses to trade a token that fails provenance (exists=false)", () => {

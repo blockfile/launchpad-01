@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Component, useState, type ErrorInfo, type ReactNode } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router";
 import { WagmiProvider } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,6 +23,70 @@ const NAV_LINKS = [
 
 function navLinkClassName({ isActive }: { isActive: boolean }): string {
   return isActive ? "font-semibold text-white" : "text-slate-400 hover:text-slate-100";
+}
+
+interface ErrorBoundaryState {
+  error: Error | null;
+}
+
+/**
+ * App-wide last line of defense against a render-time throw. React unmounts the
+ * ENTIRE component tree when a render throws and nothing catches it — a blank
+ * white screen (exactly what a null factory address once did to the Launch
+ * page). This boundary catches any such throw and shows a friendly, recoverable
+ * fallback instead, so no future render error can ever blank the whole app.
+ *
+ * Individual pages still handle their own expected empty/unavailable states
+ * gracefully (see the "not available on this network" notices) — this only
+ * catches the truly-unexpected, and must never itself throw.
+ */
+export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    // eslint-disable-next-line no-console
+    console.error("Uncaught render error:", error, info.componentStack);
+  }
+
+  render(): ReactNode {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <div
+        role="alert"
+        className="mx-auto max-w-xl p-6 text-slate-100"
+        data-testid="app-error-boundary"
+      >
+        <h1 className="mb-2 text-2xl font-semibold">Something went wrong</h1>
+        <p className="mb-4 text-slate-400">
+          The app hit an unexpected error and couldn&apos;t finish rendering this page. Your funds
+          and data are unaffected — reloading usually clears it.
+        </p>
+        <pre className="mb-4 overflow-auto rounded border border-slate-800 bg-slate-900 p-3 text-sm text-rose-300">
+          {error.message}
+        </pre>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded bg-emerald-600 px-4 py-2 font-semibold"
+          >
+            Reload
+          </button>
+          <a
+            href="/"
+            className="rounded border border-slate-700 px-4 py-2 font-semibold text-slate-200 hover:border-slate-500"
+          >
+            Go home
+          </a>
+        </div>
+      </div>
+    );
+  }
 }
 
 /**
@@ -60,12 +124,14 @@ export default function App() {
               </header>
 
               <main>
-                <Routes>
-                  <Route path="/" element={<Explore />} />
-                  <Route path="/create" element={<Launch />} />
-                  <Route path="/token/:address" element={<Trade />} />
-                  <Route path="/portfolio" element={<Portfolio />} />
-                </Routes>
+                <ErrorBoundary>
+                  <Routes>
+                    <Route path="/" element={<Explore />} />
+                    <Route path="/create" element={<Launch />} />
+                    <Route path="/token/:address" element={<Trade />} />
+                    <Route path="/portfolio" element={<Portfolio />} />
+                  </Routes>
+                </ErrorBoundary>
               </main>
 
               <Toaster />

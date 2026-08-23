@@ -12,9 +12,11 @@ import {
 } from "wagmi";
 import { parseEther, parseEventLogs } from "viem";
 import { launchFactoryAbi } from "@launchpad/shared";
-import { resolveAddress } from "../lib/contracts";
+import { resolveAddress, resolveAddressOptional } from "../lib/contracts";
 import { usePredictedTokenAddress, useAvailableLaunchConfigs } from "../lib/launchConfig";
 import { LogoField } from "../components/LogoField";
+import { LaunchpadUnavailableNotice } from "../components/NetworkNotice";
+import { WrongNetworkBanner } from "../components/WrongNetworkBanner";
 import { ArmSwitch } from "../components/ui/ArmSwitch";
 import { Fact, Modal } from "../components/ui/Modal";
 import { formatEth, shortAddress } from "../lib/format";
@@ -197,7 +199,13 @@ export default function Launch() {
     ],
   );
 
-  const factory = resolveAddress(chainId, "factory");
+  // Render-path resolution: `undefined` when no factory is deployed/overridden
+  // for this chain. It must NOT throw here (an uncaught render throw blanks the
+  // app) — instead the page renders a friendly "not available" state below, and
+  // the factory reads stay disabled until an address resolves. The WRITE path
+  // (`confirmLaunch`) re-resolves with the throwing `resolveAddress` so a null
+  // address hard-fails loudly before any tx is sent.
+  const factory = resolveAddressOptional(chainId, "factory");
   const predictedQuery = usePredictedTokenAddress({
     chainId,
     params,
@@ -212,6 +220,7 @@ export default function Launch() {
     address: factory,
     abi: launchFactoryAbi,
     functionName: "launchFee",
+    query: { enabled: Boolean(factory) },
   });
   const launchFee = launchFeeQuery.data as bigint | undefined;
 
@@ -310,7 +319,10 @@ export default function Launch() {
     navigated.current = false;
     failureNotified.current = false;
     writeContract({
-      address: factory,
+      // WRITE path: hard-fail loudly on a null address rather than send a tx to
+      // `undefined`. We only get here with a resolvable factory, but re-resolve
+      // through the throwing variant so this invariant is enforced at the edge.
+      address: resolveAddress(chainId, "factory"),
       abi: launchFactoryAbi,
       functionName: "launchToken",
       args: [pending.params, pending.launchConfigId, pending.dexId, pending.salt],
@@ -319,11 +331,26 @@ export default function Launch() {
     setPending(null);
   }
 
+  // No factory resolvable for this chain (the default local-dev state: no
+  // deploy, no VITE_FACTORY_ADDRESS). Render a calm, instructive notice INSTEAD
+  // of a dead, option-less form. Placed after every hook above so hook order
+  // stays stable across renders.
+  if (!factory) {
+    return (
+      <div className="mx-auto max-w-xl p-6 text-slate-100">
+        <h1 className="mb-4 text-2xl font-semibold">Launch a token</h1>
+        <LaunchpadUnavailableNotice />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-xl p-6 text-slate-100">
       <h1 className="mb-4 text-2xl font-semibold">Launch a token</h1>
 
-      <form className="grid gap-4" onSubmit={(e) => e.preventDefault()}>
+      <WrongNetworkBanner />
+
+      <form className="mt-4 grid gap-4" onSubmit={(e) => e.preventDefault()}>
         <label className="grid gap-1">
           <span>Name</span>
           <input aria-label="Name" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("name")} />
