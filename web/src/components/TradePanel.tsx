@@ -10,6 +10,8 @@ import {
 import { waitForTransactionReceipt } from "wagmi/actions";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatEther, parseEther } from "viem";
+import { motion } from "framer-motion";
+import { LuInfo, LuWallet, LuTriangleAlert } from "react-icons/lu";
 import { tokenAbi } from "@launchpad/shared";
 import {
   useTokenPool,
@@ -295,22 +297,29 @@ export function TradePanel({
 
   if (pool.isLoading && !pool.exists) {
     return (
-      <div
-        data-testid="trade-panel"
-        className="h-fit rounded border border-slate-700 p-4 text-sm text-slate-500"
-      >
-        Loading market…
+      <div data-testid="trade-panel" className="surface-card p-4 sm:p-5">
+        <div className="space-y-3">
+          <div className="h-11 animate-pulse rounded-xl bg-surface-2" />
+          <div className="h-12 animate-pulse rounded-xl bg-surface-2" />
+          <div className="h-20 animate-pulse rounded-xl bg-surface-2" />
+          <div className="h-11 animate-pulse rounded-xl bg-surface-2" />
+        </div>
       </div>
     );
   }
 
   if (!pool.exists) {
     return (
-      <div
-        data-testid="trade-panel"
-        className="h-fit rounded border border-slate-700 p-4 text-sm text-amber-400"
-      >
-        This address is not a launched token and cannot be traded here.
+      <div data-testid="trade-panel" className="surface-card p-5">
+        <div className="flex items-start gap-3 text-sm">
+          <LuTriangleAlert className="mt-0.5 shrink-0 text-gold" />
+          <div>
+            <p className="font-semibold text-ink">Not tradable</p>
+            <p className="mt-1 text-ink-muted">
+              This address is not a launched token and cannot be traded here.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }
@@ -320,11 +329,16 @@ export function TradePanel({
   // pool. Explain it instead of rendering a permanently-dead Swap button.
   if (pool.poolUnavailable) {
     return (
-      <div
-        data-testid="trade-panel"
-        className="h-fit rounded border border-slate-700 p-4 text-sm text-amber-400"
-      >
-        Pool unavailable for this token's venue — trading disabled.
+      <div data-testid="trade-panel" className="surface-card p-5">
+        <div className="flex items-start gap-3 text-sm">
+          <LuTriangleAlert className="mt-0.5 shrink-0 text-gold" />
+          <div>
+            <p className="font-semibold text-ink">Trading disabled</p>
+            <p className="mt-1 text-ink-muted">
+              Pool unavailable for this token&apos;s venue — trading disabled.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }
@@ -333,58 +347,82 @@ export function TradePanel({
     setAmount(formatEther((balance * BigInt(pct)) / 100n));
   }
 
+  const SLIPPAGE_PRESETS = ["0.5", "1", "2"] as const;
+
   return (
-    <div
-      data-testid="trade-panel"
-      className="h-fit rounded border border-slate-700 p-4 text-sm text-slate-100"
-    >
+    <div data-testid="trade-panel" className="surface-card p-4 sm:p-5 text-sm text-ink">
       <div className="mb-4 empty:hidden">
         <WrongNetworkBanner />
       </div>
 
-      {/* Buy / sell tabs */}
-      <div className="mb-4 grid grid-cols-2 gap-2">
-        {(["buy", "sell"] as const).map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setSide(s)}
-            className={
-              side === s
-                ? s === "buy"
-                  ? "rounded bg-emerald-600 px-3 py-2 font-semibold"
-                  : "rounded bg-rose-600 px-3 py-2 font-semibold"
-                : "rounded border border-slate-700 px-3 py-2 text-slate-400"
-            }
-          >
-            {s === "buy" ? "Buy" : "Sell"}
-          </button>
-        ))}
+      {/* Buy / sell segmented toggle */}
+      <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl border border-border bg-surface-2 p-1">
+        {(["buy", "sell"] as const).map((s) => {
+          const active = side === s;
+          return (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setSide(s)}
+              className="relative rounded-lg px-3 py-2 text-sm font-semibold transition-colors"
+            >
+              {active && (
+                <motion.span
+                  layoutId="trade-side-pill"
+                  className={`absolute inset-0 rounded-lg ${s === "buy" ? "bg-emerald" : "bg-rose"}`}
+                  transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                />
+              )}
+              <span
+                className={`relative z-10 ${
+                  active
+                    ? s === "buy"
+                      ? "text-[#04140c]"
+                      : "text-white"
+                    : "text-ink-muted"
+                }`}
+              >
+                {s === "buy" ? "Buy" : "Sell"}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {restricted && (
         <div
           data-testid="restriction-banner"
           role="status"
-          className="mb-4 rounded border border-amber-700/60 bg-amber-950/40 p-3 text-xs text-amber-300"
+          className="mb-4 flex items-start gap-2 rounded-xl border border-gold/30 bg-gold/10 p-3 text-xs text-gold-soft"
         >
-          Trading restrictions are active until block {String(pool.restrictionsEndBlock)}. Max
-          wallet / max transaction limits are enforced until then.
+          <LuInfo className="mt-0.5 shrink-0" />
+          <span>
+            Trading restrictions are active until block {String(pool.restrictionsEndBlock)}. Max
+            wallet / max transaction limits are enforced until then.
+          </span>
         </div>
       )}
 
       {/* Amount */}
-      <label className="grid gap-1">
-        <span className="text-slate-400">Amount ({inSymbol})</span>
-        <input
-          aria-label={`Amount (${inSymbol})`}
-          inputMode="decimal"
-          placeholder="0"
-          className="rounded border border-slate-700 bg-transparent px-2 py-1"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-        />
-      </label>
+      <div className="grid gap-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-ink-muted">You pay</span>
+          <span className="text-xs text-ink-faint">
+            Balance: <span className="tnum">{displayWei(balance)}</span> {inSymbol}
+          </span>
+        </div>
+        <div className="flex items-center rounded-xl border border-border bg-surface-2 transition-colors focus-within:border-accent/50">
+          <input
+            aria-label={`Amount (${inSymbol})`}
+            inputMode="decimal"
+            placeholder="0"
+            className="tnum w-full min-w-0 bg-transparent px-3 py-2.5 text-lg text-ink outline-none placeholder:text-ink-faint"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+          />
+          <span className="shrink-0 px-3 text-sm font-medium text-ink-muted">{inSymbol}</span>
+        </div>
+      </div>
 
       <div className="mt-2 grid grid-cols-4 gap-2">
         {BALANCE_PCTS.map((pct) => (
@@ -392,47 +430,80 @@ export function TradePanel({
             key={pct}
             type="button"
             onClick={() => setPctOfBalance(pct)}
-            className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500"
+            className="rounded-lg border border-border bg-surface-2 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-border-strong hover:text-ink"
           >
             {pct}%
           </button>
         ))}
       </div>
-      <div className="mt-1 text-xs text-slate-500">
-        Balance: {displayWei(balance)} {inSymbol}
-      </div>
 
       {/* Slippage */}
-      <label className="mt-4 grid gap-1">
-        <span className="text-slate-400">Slippage (%)</span>
-        <input
-          aria-label="Slippage (%)"
-          inputMode="decimal"
-          className="w-24 rounded border border-slate-700 bg-transparent px-2 py-1"
-          value={slippagePct}
-          onChange={(e) => setSlippagePct(e.target.value)}
-        />
-      </label>
+      <div className="mt-4 grid gap-1.5">
+        <span className="text-xs font-medium text-ink-muted">Slippage tolerance</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center rounded-xl border border-border bg-surface-2 transition-colors focus-within:border-accent/50">
+            <input
+              aria-label="Slippage (%)"
+              inputMode="decimal"
+              className="tnum w-16 bg-transparent px-3 py-2 text-sm text-ink outline-none"
+              value={slippagePct}
+              onChange={(e) => setSlippagePct(e.target.value)}
+            />
+            <span className="pr-3 text-sm text-ink-muted">%</span>
+          </div>
+          <div className="flex gap-1.5">
+            {SLIPPAGE_PRESETS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setSlippagePct(p)}
+                className={`chip !px-2.5 !py-1 text-xs transition-colors ${
+                  slippagePct === p
+                    ? "border-accent/40 !bg-accent/15 font-semibold text-accent"
+                    : "text-ink-muted hover:text-ink"
+                }`}
+              >
+                {p}%
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {/* Quote read-out */}
-      <dl className="mt-4 grid gap-1 rounded border border-slate-800 p-3 text-xs">
-        <div className="flex justify-between">
-          <dt className="text-slate-400">Estimated {outSymbol} out</dt>
-          <dd data-testid="estimate-out">{displayWei(estimate)}</dd>
+      <div className="mt-4 rounded-xl border border-border bg-surface-2/60 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs text-ink-muted">You receive ≈</span>
+          <span className="flex items-baseline gap-1">
+            <span data-testid="estimate-out" className="tnum text-base font-semibold text-ink">
+              {displayWei(estimate)}
+            </span>
+            <span className="text-xs text-ink-muted">{hasQuote ? outSymbol : ""}</span>
+          </span>
         </div>
-        <div className="flex justify-between">
-          <dt className="text-slate-400">Minimum received ({slippagePct || "0"}% slippage)</dt>
-          <dd data-testid="min-out">{hasQuote ? formatEther(minOut) : "—"}</dd>
+        <div className="mt-1.5 flex items-center justify-between gap-3 text-xs">
+          <span className="text-ink-faint">Min received ({slippagePct || "0"}% slippage)</span>
+          <span data-testid="min-out" className="tnum text-ink-muted">
+            {hasQuote ? formatEther(minOut) : "—"}
+          </span>
         </div>
-      </dl>
+      </div>
 
-      {!account && <p className="mt-3 text-xs text-amber-400">Connect a wallet to trade.</p>}
+      {!account && (
+        <p className="mt-3 flex items-center gap-1.5 text-xs text-gold">
+          <LuWallet className="shrink-0" /> Connect a wallet to trade.
+        </p>
+      )}
 
       <BusyButton
         busy={busy}
         busyWhen="swap"
         disabled={!canSwap}
-        className="mt-4 w-full rounded bg-sky-600 px-4 py-2 font-semibold disabled:opacity-40"
+        className={`mt-4 w-full justify-center rounded-xl px-4 py-3 text-base font-semibold transition-[filter,opacity] disabled:cursor-not-allowed disabled:opacity-40 ${
+          side === "buy"
+            ? "bg-emerald text-[#04140c] hover:brightness-110"
+            : "bg-rose text-white hover:brightness-110"
+        }`}
         onClick={() => void submitSwap()}
       >
         Swap
