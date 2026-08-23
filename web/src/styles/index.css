@@ -148,6 +148,267 @@
     font-size: 0.78rem;
   }
 
+  /* ── Launch form primitives ──────────────────────────────────────────
+     The shared LogoField / ArmSwitch / Modal emit these bare class names and
+     are used only by the Launch route; styling them here (rather than in the
+     route markup) keeps the confirm-modal body-freeze / IPFS-pin components
+     untouched while giving them the dark-theme skin the redesign calls for. */
+
+  /* LogoField — a dashed "drop-zone" tile with preview + moderation gate */
+  .logo-field {
+    display: grid;
+    gap: 0.55rem;
+  }
+  .logo-field-label {
+    /* The field's own visible caption is provided by the route; hide the
+       component's built-in one so it isn't doubled. */
+    display: none;
+  }
+  .logo-confirm {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    color: var(--color-ink-muted);
+    cursor: pointer;
+  }
+  .logo-confirm input {
+    margin-top: 0.15rem;
+    accent-color: var(--color-accent);
+    flex: none;
+  }
+  .logo-box {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.9rem;
+    border-radius: var(--radius-xl);
+    border: 1.5px dashed var(--color-border-strong);
+    background-color: var(--color-surface-2);
+    transition:
+      border-color 180ms var(--ease-out-soft),
+      background-color 180ms var(--ease-out-soft);
+  }
+  .logo-box:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border-strong));
+  }
+  .logo-thumb {
+    width: 3.5rem;
+    height: 3.5rem;
+    flex: none;
+    border-radius: 0.7rem;
+    object-fit: cover;
+    border: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+  }
+  .logo-thumb-empty {
+    display: inline-block;
+    background-image: radial-gradient(
+      circle at 50% 40%,
+      var(--color-surface-hover),
+      var(--color-surface)
+    );
+  }
+  .logo-meta {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .hint {
+    font-size: 0.72rem;
+    color: var(--color-ink-faint);
+    word-break: break-all;
+  }
+  .logo-error {
+    color: var(--color-rose);
+  }
+
+  /* Small quiet button used by LogoField (choose / replace / remove) */
+  .ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--color-border-strong);
+    background-color: transparent;
+    color: var(--color-ink);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.4rem 0.8rem;
+    cursor: pointer;
+    transition:
+      border-color 150ms var(--ease-out-soft),
+      background-color 150ms var(--ease-out-soft);
+  }
+  .ghost:hover:not(:disabled) {
+    border-color: var(--color-ink-faint);
+    background-color: var(--color-surface-2);
+  }
+  .ghost:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ArmSwitch — a real-looking toggle around the native checkbox */
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-ink-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .switch input {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 2.4rem;
+    height: 1.35rem;
+    flex: none;
+    border-radius: 9999px;
+    border: 1px solid var(--color-border-strong);
+    background-color: var(--color-surface-2);
+    cursor: pointer;
+    transition:
+      background-color 180ms var(--ease-out-soft),
+      border-color 180ms var(--ease-out-soft);
+  }
+  .switch input::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 0.18rem;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 9999px;
+    background-color: var(--color-ink-muted);
+    transform: translateY(-50%);
+    transition:
+      transform 180ms var(--ease-out-soft),
+      background-color 180ms var(--ease-out-soft);
+  }
+  .switch input:checked {
+    background-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+    border-color: var(--color-accent);
+  }
+  .switch input:checked::after {
+    transform: translate(1.05rem, -50%);
+    background-color: var(--color-accent);
+  }
+  .switch input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .switch.armed {
+    color: var(--color-accent);
+  }
+
+  /* Modal — dark, on-theme confirm dialog (portalled to <body>) */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background-color: rgba(5, 5, 7, 0.72);
+    backdrop-filter: blur(4px);
+  }
+  .modal {
+    width: 100%;
+    max-width: 26rem;
+    border-radius: var(--radius-2xl);
+    border: 1px solid var(--color-border-strong);
+    background-color: var(--color-surface);
+    padding: 1.25rem;
+    box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.8);
+    outline: none;
+  }
+  .modal.is-danger {
+    border-color: color-mix(in srgb, var(--color-rose) 42%, var(--color-border-strong));
+  }
+  .modal-title {
+    margin: 0 0 0.9rem;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--color-ink);
+  }
+  .modal-body {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .modal-question {
+    margin: 0.9rem 0 0;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: var(--color-ink-muted);
+  }
+  .modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    margin-top: 1.15rem;
+  }
+  .modal-foot button {
+    border-radius: var(--radius-xl);
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    transition:
+      background-color 150ms var(--ease-out-soft),
+      border-color 150ms var(--ease-out-soft),
+      filter 150ms var(--ease-out-soft);
+  }
+  .modal-foot .quiet {
+    background-color: transparent;
+    border: 1px solid var(--color-border-strong);
+    color: var(--color-ink);
+  }
+  .modal-foot .quiet:hover {
+    border-color: var(--color-ink-faint);
+    background-color: var(--color-surface-2);
+  }
+  .modal-foot .danger {
+    background-color: var(--color-accent);
+    border: 1px solid transparent;
+    color: #0a0a0b;
+  }
+  .modal-foot .danger:hover {
+    background-color: var(--color-accent-bright);
+  }
+  .modal-foot .danger:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .modal-fact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0.7rem;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-border);
+    background-color: var(--color-surface-2);
+    font-size: 0.85rem;
+  }
+  .modal-fact > span {
+    color: var(--color-ink-muted);
+  }
+  .modal-fact > b {
+    color: var(--color-ink);
+    font-weight: 600;
+  }
+  .addr {
+    font-family: var(--font-mono);
+  }
+
   /* Radial glow behind hero/featured area */
   .hero-glow {
     position: absolute;

@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useNavigate } from "react-router";
 import {
   useAccount,
+  useBalance,
   useChainId,
   useReadContract,
   useWaitForTransactionReceipt,
   useWriteContract,
 } from "wagmi";
-import { parseEther, parseEventLogs } from "viem";
+import { formatEther, parseEther, parseEventLogs } from "viem";
+import { AnimatePresence, motion } from "framer-motion";
+import { FaEthereum, FaTelegram, FaXTwitter } from "react-icons/fa6";
+import { LuChevronDown, LuDices, LuInfo, LuLock } from "react-icons/lu";
 import { launchFactoryAbi } from "@launchpad/shared";
 import { resolveAddress, resolveAddressOptional } from "../lib/contracts";
 import { usePredictedTokenAddress, useAvailableLaunchConfigs } from "../lib/launchConfig";
@@ -20,6 +25,8 @@ import { WrongNetworkBanner } from "../components/WrongNetworkBanner";
 import { ArmSwitch } from "../components/ui/ArmSwitch";
 import { Fact, Modal } from "../components/ui/Modal";
 import { formatEth, shortAddress } from "../lib/format";
+import { safeImageSrc } from "../lib/safeUrl";
+import { onLogoError } from "../components/TokenCard";
 import { notify } from "../lib/toast";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
@@ -124,6 +131,58 @@ function launchFailureToast(error: unknown): { message: string; level: "info" | 
   };
 }
 
+// Shared field styles — the dark, focus-lit input treatment the whole form uses.
+const inputClass =
+  "w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-ink placeholder:text-ink-faint outline-none transition-colors focus:border-accent/50 focus:bg-surface";
+
+/** One labelled row in the "Your token" spec list. */
+function SpecRow({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5">
+      <span className="inline-flex items-center gap-1.5 text-sm text-ink-muted">
+        {label}
+        {hint && (
+          <span title={hint} className="inline-flex text-ink-faint">
+            <LuInfo aria-hidden className="text-[0.85em]" />
+          </span>
+        )}
+      </span>
+      <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink">{children}</span>
+    </div>
+  );
+}
+
+/** A social handle input with a fixed, non-editable service prefix (x.com/,
+ * t.me/). The prefix is decorative — the stored value is the raw handle, exactly
+ * as before. */
+function HandleField({
+  label,
+  prefix,
+  icon,
+  ...input
+}: {
+  label: string;
+  prefix: string;
+  icon: ReactNode;
+} & React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <label className="grid gap-1.5">
+      <span className="text-sm font-medium text-ink">{label}</span>
+      <div className="flex items-center rounded-xl border border-border bg-surface-2 transition-colors focus-within:border-accent/50">
+        <span className="inline-flex shrink-0 items-center gap-1 pl-3 text-sm text-ink-faint">
+          {icon}
+          {prefix}
+        </span>
+        <input
+          aria-label={label}
+          className="w-full min-w-0 rounded-r-xl bg-transparent py-2 pl-1 pr-3 text-sm text-ink outline-none placeholder:text-ink-faint"
+          {...input}
+        />
+      </div>
+    </label>
+  );
+}
+
 export default function Launch() {
   const chainId = useChainId();
   const { address } = useAccount();
@@ -151,6 +210,7 @@ export default function Launch() {
   const [salt, setSalt] = useState<`0x${string}`>(() => randomSalt());
   const [uploading, setUploading] = useState(false);
   const [armed, setArmed] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [pending, setPending] = useState<PendingLaunch | null>(null);
 
   const { launchConfigIds, dexIds } = useAvailableLaunchConfigs(chainId);
@@ -224,6 +284,12 @@ export default function Launch() {
   });
   const launchFee = launchFeeQuery.data as bigint | undefined;
 
+  // Display-only native balance, for the dev-buy "Max" affordance + the
+  // "X ETH available" helper. Never part of the launch value math (which stays
+  // launchFee + devBuy exactly); a missing balance simply disables Max.
+  const balanceQuery = useBalance({ address, query: { enabled: Boolean(address) } });
+  const balanceWei = balanceQuery.data?.value as bigint | undefined;
+
   const devBuyWei = useMemo(() => devBuyToWei(values.devBuyEth), [values.devBuyEth]);
   const totalValue = launchFee === undefined ? undefined : launchFee + devBuyWei;
 
@@ -283,13 +349,19 @@ export default function Launch() {
   }, [writeError, receipt.isError, receipt.data, receipt.error, resetWrite]);
 
   const showPredicted = Boolean(values.name && values.symbol && values.logo);
-  const canReview =
-    armed &&
-    formState.isValid &&
-    Boolean(address) &&
-    launchFee !== undefined &&
-    !uploading &&
-    !pending;
+  const formReady =
+    Boolean(address) && formState.isValid && launchFee !== undefined && !uploading;
+  const canReview = armed && formReady && !pending;
+  // The CTA narrates why it can't yet act; arming only gates `disabled`, so a
+  // valid-but-unarmed form still reads "Review launch" (disabled) exactly as the
+  // arm-switch test expects.
+  const ctaLabel = !address ? "Connect wallet" : !formReady ? "Fill token details" : "Review launch";
+
+  function setMaxDevBuy() {
+    if (balanceWei === undefined || launchFee === undefined) return;
+    const spendable = balanceWei > launchFee ? balanceWei - launchFee : 0n;
+    setValue("devBuyEth", formatEther(spendable), { shouldValidate: true, shouldDirty: true });
+  }
 
   function openReview() {
     if (totalValue === undefined) return;
@@ -337,135 +409,357 @@ export default function Launch() {
   // stays stable across renders.
   if (!factory) {
     return (
-      <div className="mx-auto max-w-xl p-6 text-slate-100">
-        <h1 className="mb-4 text-2xl font-semibold">Launch a token</h1>
+      <div className="mx-auto max-w-xl px-4 py-8 sm:px-6">
+        <h1 className="mb-4 text-2xl font-bold tracking-tight text-ink">Launch token</h1>
         <LaunchpadUnavailableNotice />
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-xl p-6 text-slate-100">
-      <h1 className="mb-4 text-2xl font-semibold">Launch a token</h1>
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mb-5">
+        <WrongNetworkBanner />
+      </div>
 
-      <WrongNetworkBanner />
-
-      <form className="mt-4 grid gap-4" onSubmit={(e) => e.preventDefault()}>
-        <label className="grid gap-1">
-          <span>Name</span>
-          <input aria-label="Name" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("name")} />
-        </label>
-
-        <label className="grid gap-1">
-          <span>Symbol</span>
-          <input aria-label="Symbol" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("symbol")} />
-        </label>
-
-        <label className="grid gap-1">
-          <span>Description</span>
-          <textarea aria-label="Description" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("description")} />
-        </label>
-
-        <LogoField
-          value={values.logo}
-          onChange={(uri) => setValue("logo", uri, { shouldValidate: true, shouldDirty: true })}
-          onUploading={setUploading}
-        />
-        {formState.errors.logo && <span className="text-sm text-red-400">{formState.errors.logo.message}</span>}
-
-        <fieldset className="grid gap-2">
-          <legend className="text-slate-400">Socials (optional)</legend>
-          <input aria-label="Twitter" placeholder="Twitter" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("twitter")} />
-          <input aria-label="Telegram" placeholder="Telegram" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("telegram")} />
-          <input aria-label="Discord" placeholder="Discord" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("discord")} />
-          <input aria-label="Website" placeholder="Website" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("website")} />
-          <input aria-label="Farcaster" placeholder="Farcaster" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("farcaster")} />
-        </fieldset>
-
-        <label className="grid gap-1">
-          <span>Fee wallet (optional — defaults to your connected wallet)</span>
-          <input aria-label="Fee wallet" placeholder={address ?? "0x…"} className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("feeWallet")} />
-          {formState.errors.feeWallet && <span className="text-sm text-red-400">Enter a valid 0x address or leave blank.</span>}
-        </label>
-
-        <label className="grid gap-1">
-          <span>Dev buy (ETH)</span>
-          <input aria-label="Dev buy (ETH)" inputMode="decimal" placeholder="0" className="rounded border border-slate-700 bg-transparent px-2 py-1" {...register("devBuyEth")} />
-        </label>
-
-        <div className="grid grid-cols-2 gap-4">
-          <label className="grid gap-1">
-            <span>Launch config</span>
-            <select
-              aria-label="Launch config"
-              className="rounded border border-slate-700 bg-transparent px-2 py-1"
-              value={String(launchConfigId)}
-              onChange={(e) => setLaunchConfigId(BigInt(e.target.value))}
-            >
-              {launchConfigIds.map((id) => (
-                <option key={id} value={id}>
-                  #{id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1">
-            <span>DEX</span>
-            <select
-              aria-label="DEX"
-              className="rounded border border-slate-700 bg-transparent px-2 py-1"
-              value={String(dexId)}
-              onChange={(e) => setDexId(BigInt(e.target.value))}
-            >
-              {dexIds.map((id) => (
-                <option key={id} value={id}>
-                  #{id}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        {showPredicted && (
-          <div data-testid="predicted-address" className="rounded border border-slate-800 p-3 text-sm">
-            <span className="text-slate-400">Predicted token address</span>
-            <div className="addr break-all">{predicted ?? "computing…"}</div>
-            <button type="button" className="ghost mt-1 text-xs text-slate-400" onClick={() => setSalt(randomSalt())}>
-              Reroll address
-            </button>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        {/* ── Left: the form ─────────────────────────────────────────────── */}
+        <form className="surface-card p-5 sm:p-6" onSubmit={(e) => e.preventDefault()}>
+          <div className="mb-6">
+            <h1 className="text-2xl font-bold tracking-tight text-ink">Launch token</h1>
+            <p className="mt-1 text-sm text-ink-muted">
+              Deploy a token and seed its pool in one transaction. This spends real ETH.
+            </p>
           </div>
-        )}
 
-        {/* Read-only summary strip: launch fee + dev buy = total ETH. */}
-        <dl className="grid grid-cols-3 gap-2 rounded border border-slate-800 p-3 text-sm">
-          <div>
-            <dt className="text-slate-400">Launch fee</dt>
-            <dd>{launchFee === undefined ? "…" : formatEth(launchFee)}</dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">Dev buy</dt>
-            <dd>{formatEth(devBuyWei)}</dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">Total</dt>
-            <dd data-testid="summary-total">{totalValue === undefined ? "…" : formatEth(totalValue)}</dd>
-          </div>
-        </dl>
+          <div className="grid gap-5">
+            {/* Name + Ticker */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="grid gap-1.5">
+                <span className="text-sm font-medium text-ink">Name</span>
+                <input aria-label="Name" placeholder="Dogwifhat" className={inputClass} {...register("name")} />
+                {formState.errors.name && <span className="text-xs text-rose">Enter a token name.</span>}
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-sm font-medium text-ink">Ticker</span>
+                <input
+                  aria-label="Ticker"
+                  placeholder="WIF"
+                  className={`${inputClass} uppercase placeholder:normal-case`}
+                  {...register("symbol")}
+                />
+                {formState.errors.symbol && <span className="text-xs text-rose">Enter a ticker.</span>}
+              </label>
+            </div>
 
-        {!address && <p className="text-sm text-amber-400">Connect a wallet to launch.</p>}
+            {/* Description */}
+            <label className="grid gap-1.5">
+              <span className="text-sm font-medium text-ink">Description</span>
+              <textarea
+                aria-label="Description"
+                rows={3}
+                placeholder="What's the story behind your token?"
+                className={`${inputClass} resize-none`}
+                {...register("description")}
+              />
+            </label>
 
-        <div className="flex items-center gap-4">
-          <ArmSwitch armed={armed} onChange={setArmed} disabled={uploading} />
-          <button
-            type="button"
-            className="rounded bg-emerald-600 px-4 py-2 font-semibold disabled:opacity-40"
-            disabled={!canReview}
-            onClick={openReview}
-          >
-            Review launch
-          </button>
-        </div>
-      </form>
+            {/* Token image */}
+            <div className="grid gap-1.5">
+              <span className="text-sm font-medium text-ink">Token image</span>
+              <LogoField
+                value={values.logo}
+                onChange={(uri) => setValue("logo", uri, { shouldValidate: true, shouldDirty: true })}
+                onUploading={setUploading}
+              />
+              {formState.errors.logo && (
+                <span className="text-xs text-rose">{formState.errors.logo.message}</span>
+              )}
+            </div>
+
+            {/* Socials: X + Telegram */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <HandleField
+                label="X profile"
+                prefix="x.com/"
+                icon={<FaXTwitter aria-hidden />}
+                placeholder="handle"
+                {...register("twitter")}
+              />
+              <HandleField
+                label="Telegram"
+                prefix="t.me/"
+                icon={<FaTelegram aria-hidden className="text-[#229ED9]" />}
+                placeholder="group"
+                {...register("telegram")}
+              />
+            </div>
+
+            {/* Paired asset */}
+            <div className="grid gap-1.5">
+              <span className="text-sm font-medium text-ink">Paired asset</span>
+              <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-ink">
+                <span className="inline-flex items-center gap-2 font-medium">
+                  <FaEthereum aria-hidden className="text-accent" /> ETH
+                </span>
+                <LuChevronDown aria-hidden className="text-ink-faint" />
+              </div>
+              <span className="text-xs text-ink-faint">ETH is the only pairing available today.</span>
+            </div>
+
+            {/* Developer buy — a plain <div>, not a <label>: the "Max" button
+                would otherwise become the label's implicit target. */}
+            <div className="grid gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-ink">Developer buy</span>
+                <button
+                  type="button"
+                  onClick={setMaxDevBuy}
+                  className="chip border-accent/30 !bg-accent/10 !px-2.5 !py-0.5 text-xs font-semibold text-accent transition-colors hover:!bg-accent/20"
+                >
+                  Max
+                </button>
+              </div>
+              <div className="flex items-center rounded-xl border border-border bg-surface-2 transition-colors focus-within:border-accent/50">
+                <input
+                  aria-label="Developer buy"
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full min-w-0 rounded-l-xl bg-transparent px-3 py-2 text-sm text-ink outline-none tnum placeholder:text-ink-faint"
+                  {...register("devBuyEth")}
+                />
+                <span className="inline-flex shrink-0 items-center gap-1 pr-3 text-sm text-ink-muted">
+                  <FaEthereum aria-hidden className="text-ink-faint" /> ETH
+                </span>
+              </div>
+              <span className="text-xs text-ink-faint">
+                {balanceWei !== undefined ? `${formatEth(balanceWei)} available` : "Balance unavailable"} · bought
+                in the launch transaction.
+              </span>
+            </div>
+
+            {/* Advanced */}
+            <div className="rounded-xl border border-border">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                aria-expanded={advancedOpen}
+                className="flex w-full items-center justify-between px-3 py-2.5 text-sm font-medium text-ink"
+              >
+                <span>Advanced</span>
+                <motion.span
+                  animate={{ rotate: advancedOpen ? 180 : 0 }}
+                  transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                  className="inline-flex text-ink-muted"
+                >
+                  <LuChevronDown aria-hidden />
+                </motion.span>
+              </button>
+              <AnimatePresence initial={false}>
+                {advancedOpen && (
+                  <motion.div
+                    key="advanced"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                    className="overflow-hidden"
+                  >
+                    <div className="grid gap-4 border-t border-border p-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="grid gap-1.5">
+                          <span className="text-xs font-medium text-ink-muted">Launch config</span>
+                          <select
+                            aria-label="Launch config"
+                            className={inputClass}
+                            value={String(launchConfigId)}
+                            onChange={(e) => setLaunchConfigId(BigInt(e.target.value))}
+                          >
+                            {launchConfigIds.map((id) => (
+                              <option key={id} value={id}>
+                                #{id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="grid gap-1.5">
+                          <span className="text-xs font-medium text-ink-muted">DEX</span>
+                          <select
+                            aria-label="DEX"
+                            className={inputClass}
+                            value={String(dexId)}
+                            onChange={(e) => setDexId(BigInt(e.target.value))}
+                          >
+                            {dexIds.map((id) => (
+                              <option key={id} value={id}>
+                                #{id}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-2 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="text-xs text-ink-muted">CREATE2 salt</div>
+                          <div className="truncate font-mono text-xs text-ink">{shortAddress(salt)}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSalt(randomSalt())}
+                          className="btn-ghost shrink-0 !px-2.5 !py-1 text-xs"
+                        >
+                          <LuDices aria-hidden /> Reroll
+                        </button>
+                      </div>
+
+                      <div className="grid gap-3">
+                        <input aria-label="Website" placeholder="Website URL" className={inputClass} {...register("website")} />
+                        <div className="grid grid-cols-2 gap-3">
+                          <input aria-label="Discord" placeholder="Discord" className={inputClass} {...register("discord")} />
+                          <input aria-label="Farcaster" placeholder="Farcaster" className={inputClass} {...register("farcaster")} />
+                        </div>
+                        <label className="grid gap-1.5">
+                          <span className="text-xs font-medium text-ink-muted">
+                            Fee wallet — defaults to your connected wallet
+                          </span>
+                          <input
+                            aria-label="Fee wallet"
+                            placeholder={address ?? "0x…"}
+                            className={`${inputClass} font-mono`}
+                            {...register("feeWallet")}
+                          />
+                          {formState.errors.feeWallet && (
+                            <span className="text-xs text-rose">Enter a valid 0x address or leave blank.</span>
+                          )}
+                        </label>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Arm + CTA */}
+            <div className="grid gap-3 border-t border-border pt-5">
+              {!address && <p className="text-sm text-gold">Connect a wallet to launch.</p>}
+              <div className="flex items-center justify-between gap-4">
+                <ArmSwitch armed={armed} onChange={setArmed} disabled={uploading} />
+                <span className="text-xs text-ink-faint">
+                  {armed ? "Armed — ready to review" : "Arm the switch to enable launch"}
+                </span>
+              </div>
+              <button
+                type="button"
+                data-testid="launch-cta"
+                className="btn-primary w-full justify-center py-3 text-base"
+                disabled={!canReview}
+                onClick={openReview}
+              >
+                {ctaLabel}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        {/* ── Right: sticky "Your token" preview ─────────────────────────── */}
+        <aside className="h-fit lg:sticky lg:top-4">
+          <div className="surface-card relative overflow-hidden !border-gold/25 p-5">
+            <div
+              aria-hidden
+              className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gold/10 blur-3xl"
+            />
+            <div className="relative">
+              <div className="mb-4 flex items-center justify-between">
+                <span className="text-sm font-semibold text-ink">Your token</span>
+                <span className="chip border-gold/30 !bg-gold/10 !py-0.5 text-[0.65rem] uppercase tracking-wider text-gold">
+                  Preview
+                </span>
+              </div>
+
+              <div className="mb-5 flex items-center gap-3">
+                {values.logo ? (
+                  <img
+                    src={safeImageSrc(values.logo)}
+                    alt=""
+                    onError={onLogoError}
+                    className="h-14 w-14 shrink-0 rounded-2xl object-cover ring-1 ring-gold/30"
+                  />
+                ) : (
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-dashed border-border-strong bg-surface-2 text-ink-faint">
+                    <FaEthereum aria-hidden />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <motion.div
+                    key={values.name || "untitled"}
+                    initial={{ opacity: 0, y: 3 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="truncate text-lg font-bold text-ink"
+                  >
+                    {values.name || "Untitled token"}
+                  </motion.div>
+                  <div className="truncate font-mono text-xs uppercase text-ink-muted">
+                    {values.symbol || "TICKER"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="divide-y divide-border border-y border-border">
+                <SpecRow label="Launch fee">
+                  <FaEthereum aria-hidden className="text-ink-faint" />
+                  <span className="tnum">{launchFee === undefined ? "…" : formatEth(launchFee)}</span>
+                </SpecRow>
+                <SpecRow label="Paired with">
+                  <FaEthereum aria-hidden className="text-accent" /> ETH
+                </SpecRow>
+                <SpecRow label="Trade fee">
+                  <span className="tnum">1.00%</span>
+                </SpecRow>
+                <SpecRow label="Launch window" hint="Anti-snipe window at launch">
+                  2 blocks
+                </SpecRow>
+                <SpecRow label="Graduation" hint="Threshold to graduate to the DEX">
+                  <span className="tnum">4.2 ETH</span>
+                </SpecRow>
+                <SpecRow label="Liquidity">
+                  <LuLock aria-hidden className="text-gold" /> Locked
+                </SpecRow>
+              </div>
+
+              {showPredicted && (
+                <div
+                  data-testid="predicted-address"
+                  className="mt-4 rounded-xl border border-border bg-surface-2 p-3"
+                >
+                  <div className="text-[0.65rem] uppercase tracking-wider text-ink-faint">
+                    Predicted address
+                  </div>
+                  <div className="mt-1 font-mono text-xs text-ink" title={predicted ?? undefined}>
+                    <span aria-hidden>{predicted ? shortAddress(predicted) : "computing…"}</span>
+                    {predicted && <span className="sr-only">{predicted}</span>}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-4 flex items-center justify-between rounded-xl border border-accent/25 bg-accent/5 px-3 py-3">
+                <span className="text-sm text-ink-muted">ETH due</span>
+                <motion.span
+                  key={totalValue?.toString() ?? "na"}
+                  initial={{ opacity: 0, y: 2 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  data-testid="summary-total"
+                  className="tnum text-base font-bold text-ink"
+                >
+                  {totalValue === undefined ? "…" : formatEth(totalValue)}
+                </motion.span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
 
       <Modal
         open={pending !== null}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import {
   encodeAbiParameters,
   encodeEventTopics,
@@ -43,6 +43,9 @@ vi.mock("wagmi", () => ({
   useAccount: () => ({ address: CONNECTED, isConnected: true, chainId: 4663 }),
   useChainId: () => 4663,
   useSwitchChain: () => ({ switchChain: vi.fn(), isPending: false }),
+  // Display-only balance behind the dev-buy "Max"/available helper. No
+  // behavioral assertion depends on it; a fixed value keeps the read defined.
+  useBalance: () => ({ data: { value: parseEther("10"), decimals: 18, symbol: "ETH" } }),
   useReadContract: () => ({ data: h.launchFee.current }),
   useWriteContract: () => ({
     writeContract: h.writeContract,
@@ -130,9 +133,9 @@ function fill(label: RegExp, value: string) {
 /** Drive the form to a valid, armed, reviewed state and open the modal. */
 function fillValidForm({ name = "Frozen Coin", symbol = "FRZ", devBuyEth = "1" } = {}) {
   fill(/^name/i, name);
-  fill(/^symbol/i, symbol);
+  fill(/ticker/i, symbol);
   fireEvent.click(screen.getByRole("button", { name: /set-logo/i }));
-  fill(/dev buy/i, devBuyEth);
+  fill(/developer buy/i, devBuyEth);
 }
 
 beforeEach(() => {
@@ -167,7 +170,7 @@ describe("Launch", () => {
     expect(screen.getByText(/VITE_FACTORY_ADDRESS/)).toBeInTheDocument();
     // The dead form must NOT render.
     expect(screen.queryByLabelText(/^name/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /review launch/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("launch-cta")).not.toBeInTheDocument();
   });
 
   it("shows the predicted address only once name, symbol and logo are all set", async () => {
@@ -175,7 +178,7 @@ describe("Launch", () => {
     expect(screen.queryByTestId("predicted-address")).not.toBeInTheDocument();
 
     fill(/^name/i, "Frozen Coin");
-    fill(/^symbol/i, "FRZ");
+    fill(/ticker/i, "FRZ");
     expect(screen.queryByTestId("predicted-address")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /set-logo/i }));
@@ -188,7 +191,7 @@ describe("Launch", () => {
     render(<Launch />);
     fillValidForm();
 
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeDisabled());
 
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
@@ -200,20 +203,23 @@ describe("Launch", () => {
     fillValidForm({ name: "Frozen Coin", devBuyEth: "1" });
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
 
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
 
-    // Modal is open and shows the frozen name.
-    expect(await screen.findByText("Frozen Coin")).toBeInTheDocument();
+    // Modal is open and shows the frozen name. Assertions are scoped to the
+    // dialog: the live "Your token" preview intentionally mirrors the still-
+    // editable form, so the name also appears outside the modal.
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Frozen Coin")).toBeInTheDocument();
 
     // Edit the underlying fields AFTER the modal opened.
     fill(/^name/i, "Changed Name");
-    fill(/dev buy/i, "9");
+    fill(/developer buy/i, "9");
 
-    // The modal still shows the frozen name, never the post-open edit.
-    expect(screen.getByText("Frozen Coin")).toBeInTheDocument();
-    expect(screen.queryByText("Changed Name")).not.toBeInTheDocument();
+    // The frozen modal still shows the original name, never the post-open edit.
+    expect(within(dialog).getByText("Frozen Coin")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Changed Name")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /launch token/i }));
 
@@ -230,7 +236,7 @@ describe("Launch", () => {
     fillValidForm({ devBuyEth: "0.5" });
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
 
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
     fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
@@ -250,7 +256,7 @@ describe("Launch", () => {
     render(<Launch />);
     fillValidForm();
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
     fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
@@ -269,7 +275,7 @@ describe("Launch", () => {
     render(<Launch />);
     fillValidForm();
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
     fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
@@ -291,7 +297,7 @@ describe("Launch", () => {
     render(<Launch />);
     fillValidForm();
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
     fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
@@ -318,7 +324,7 @@ describe("Launch", () => {
     render(<Launch />);
     fillValidForm();
     fireEvent.click(screen.getByRole("checkbox", { name: /arm/i }));
-    const review = screen.getByRole("button", { name: /review launch/i });
+    const review = screen.getByTestId("launch-cta");
     await waitFor(() => expect(review).toBeEnabled());
     fireEvent.click(review);
     fireEvent.click(await screen.findByRole("button", { name: /launch token/i }));
