@@ -7,12 +7,14 @@ import holders from "../fixtures/holders.json";
 import holdings from "../fixtures/holdings.json";
 import launchConfigs from "../fixtures/launch-configs.json";
 import search from "../fixtures/search.json";
+import stats from "../fixtures/stats.json";
 
 // Route-specific handlers before the plain `/tokens/:address` catch-all —
 // path-to-regexp segment counts already make these mutually exclusive, but
 // ordering most-specific-first keeps the list easy to scan.
 export const handlers = [
   http.get("*/tokens", () => HttpResponse.json(tokens)),
+  http.get("*/stats", () => HttpResponse.json(stats)),
   http.get("*/search", () => HttpResponse.json(search)),
   http.get("*/tokens/:address/candles", () => HttpResponse.json(candles)),
   http.get("*/tokens/:address/trades", () => HttpResponse.json(trades)),

@@ -5,7 +5,8 @@ import App, { ErrorBoundary } from "./App";
 describe("App", () => {
   it("renders the app shell", () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: /launchpad/i })).toBeInTheDocument();
+    // The sidebar wordmark is the app's discoverable top-level heading.
+    expect(screen.getByRole("heading", { name: /robinlaunch/i })).toBeInTheDocument();
   });
 });
 

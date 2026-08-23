@@ -1,1 +1,186 @@
 @import "tailwindcss";
+
+/*
+ * RobinLaunch design system — ape.store-inspired memecoin-terminal skin.
+ * Everything visual pulls from these tokens so every page shares one system.
+ * Dark-first: the default `:root` values ARE the dark theme; a `.light` /
+ * [data-theme="light"] class can later override them without touching markup.
+ * Tailwind's stock palette (slate/emerald/rose/amber…) is intentionally left
+ * intact so not-yet-redesigned page internals keep rendering unchanged.
+ */
+@theme {
+  /* Surfaces — deep charcoal near-black, subtle 1px borders */
+  --color-bg: #0a0a0b;
+  --color-bg-2: #0d0e10;
+  --color-surface: #14161a;
+  --color-surface-2: #191c21;
+  --color-surface-hover: #1d2026;
+  --color-border: #23262d;
+  --color-border-strong: #2c313a;
+
+  /* Accents — emerald/lime primary, warm gold for King/featured, rose negative */
+  --color-accent: #84cc16;
+  --color-accent-bright: #a3e635;
+  --color-emerald: #10b981;
+  --color-gold: #f5c518;
+  --color-gold-soft: #fbbf24;
+  --color-rose: #f43f5e;
+
+  /* Text — near-white primary, muted gray secondary */
+  --color-ink: #f5f6f7;
+  --color-ink-muted: #8b909a;
+  --color-ink-faint: #5b606b;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Shape */
+  --radius-2xl: 1rem;
+  --radius-xl: 0.75rem;
+
+  /* Motion */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    /* Subtle vertical gradient from #0A0A0B → #0D0E10 */
+    background-color: var(--color-bg);
+    background-image: linear-gradient(180deg, var(--color-bg) 0%, var(--color-bg-2) 100%);
+    background-attachment: fixed;
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Numbers/prices lean on the mono face for that terminal feel */
+  .tnum {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Card surface — rounded-2xl, 1px subtle border, soft shadow */
+  .surface-card {
+    border-radius: var(--radius-2xl);
+    border: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.02) inset,
+      0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  }
+
+  .surface-card-hover {
+    transition:
+      border-color 180ms var(--ease-out-soft),
+      background-color 180ms var(--ease-out-soft),
+      transform 180ms var(--ease-out-soft);
+  }
+  .surface-card-hover:hover {
+    border-color: var(--color-border-strong);
+    background-color: var(--color-surface-2);
+  }
+
+  /* Primary action — lime/emerald, black ink for punch */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-xl);
+    background-color: var(--color-accent);
+    color: #0a0a0b;
+    font-weight: 600;
+    padding: 0.55rem 1rem;
+    transition: background-color 150ms var(--ease-out-soft), filter 150ms var(--ease-out-soft);
+  }
+  .btn-primary:hover {
+    background-color: var(--color-accent-bright);
+  }
+  .btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* Secondary / ghost action */
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-border-strong);
+    color: var(--color-ink);
+    font-weight: 500;
+    padding: 0.5rem 0.9rem;
+    transition: border-color 150ms var(--ease-out-soft), background-color 150ms var(--ease-out-soft);
+  }
+  .btn-ghost:hover {
+    border-color: var(--color-ink-faint);
+    background-color: var(--color-surface-2);
+  }
+
+  /* Small labelled pill used by the ticker chips / tags */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    white-space: nowrap;
+    border-radius: 9999px;
+    border: 1px solid var(--color-border);
+    background-color: var(--color-surface);
+    padding: 0.28rem 0.7rem;
+    font-size: 0.78rem;
+  }
+
+  /* Radial glow behind hero/featured area */
+  .hero-glow {
+    position: absolute;
+    inset: -20% -10% auto -10%;
+    height: 340px;
+    pointer-events: none;
+    background:
+      radial-gradient(60% 120% at 20% 0%, rgba(245, 197, 24, 0.1), transparent 60%),
+      radial-gradient(50% 120% at 80% 0%, rgba(132, 204, 22, 0.09), transparent 62%);
+    filter: blur(8px);
+    z-index: 0;
+  }
+}
+
+/* Thin, on-brand scrollbars for the dense terminal layout */
+@layer utilities {
+  .scroll-slim {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+  .scroll-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scroll-slim::-webkit-scrollbar-thumb {
+    background-color: var(--color-border-strong);
+    border-radius: 9999px;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
