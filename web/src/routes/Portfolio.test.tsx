@@ -68,12 +68,12 @@ describe("Portfolio", () => {
   it("shows an em dash for valueEth on a token with no trades yet (null pre-first-trade)", async () => {
     renderPortfolio();
 
-    const row = (await screen.findByText("Untraded Test Token")).closest("tr")!;
-    expect(within(row).getByText("—")).toBeInTheDocument();
-    expect(within(row).getByRole("link")).toHaveAttribute(
-      "href",
-      `/token/${holdings.items[1].tokenAddress}`,
-    );
+    // The holding's card IS the link (a real `<a>`, not a nested one), so the
+    // accessible target for both the value text and the href is the closest
+    // anchor ancestor rather than a `<tr>`.
+    const card = (await screen.findByText("Untraded Test Token")).closest("a")!;
+    expect(within(card).getByText("—")).toBeInTheDocument();
+    expect(card).toHaveAttribute("href", `/token/${holdings.items[1].tokenAddress}`);
   });
 
   it("adds a manually-entered token address as a balanceOf-backed row, clearly labeled as not indexed", async () => {
@@ -85,10 +85,10 @@ describe("Portfolio", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /add/i }));
 
-    const row = (await screen.findByText(/added manually/i)).closest("tr")!;
+    const card = (await screen.findByText(/added manually/i)).closest("a")!;
     // 42n * 10^18 wei → "42" whole tokens, read via the mocked balanceOf.
-    expect(within(row).getByText("42")).toBeInTheDocument();
-    expect(within(row).getByRole("link")).toHaveAttribute("href", `/token/${MANUAL_TOKEN}`);
+    expect(within(card).getByText("42")).toBeInTheDocument();
+    expect(card).toHaveAttribute("href", `/token/${MANUAL_TOKEN}`);
 
     // It wasn't in the holdings fixture at all.
     expect(holdings.items.some((item) => item.tokenAddress === MANUAL_TOKEN)).toBe(false);
@@ -111,7 +111,7 @@ describe("Portfolio", () => {
     h.account = undefined;
     renderPortfolio();
 
-    expect(screen.getByText(/connect a wallet/i)).toBeInTheDocument();
+    expect(screen.getByText(/connect your wallet/i)).toBeInTheDocument();
     expect(screen.queryByText("Pons Test Token")).not.toBeInTheDocument();
   });
 
