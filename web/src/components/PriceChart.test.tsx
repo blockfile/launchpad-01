@@ -18,6 +18,7 @@ vi.mock("lightweight-charts", () => ({
   // proves PriceChart passes THIS exact export through to addSeries rather
   // than reimplementing / stringly-typing the v5 series-definition contract.
   CandlestickSeries: { __brand: "CandlestickSeries-v5-definition" },
+  ColorType: { Solid: "solid" },
   createChart: h.createChart,
 }));
 

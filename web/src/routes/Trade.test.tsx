@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("lightweight-charts", () => ({
   CandlestickSeries: { __brand: "CandlestickSeries-v5-definition" },
+  ColorType: { Solid: "solid" },
   createChart: h.createChart,
 }));
 
