@@ -8,3 +8,5 @@ dist/
 
 # SDD/workflow scratch (ledgers, briefs, review diffs)
 .superpowers/
+web/dist-server/
+.env.pm2
