@@ -268,6 +268,7 @@ dropped in Postgres afterwards). A plain restart of the same build keeps `rhpad_
 | `/indexer/tokens` → 502 | `pm2 logs rhpad-indexer` — usually `DATABASE_URL` wrong or Postgres not running (`systemctl status postgresql`). |
 | Explore is empty but the contract has launches | Ponder still backfilling (`pm2 logs`), or `PONDER_START_BLOCK` set later than 47146567. |
 | Logo upload returns `ipfs://mock-…` | `PINATA_JWT` missing from `.env.pm2`; fix and `pm2 reload ecosystem.config.cjs`. |
+| Logo upload → “Pinning failed (Pinata pin failed: 401)”, or `rhpad-pin` exits at boot with “PINATA_JWT is not a JWT” | `.env.pm2` holds Pinata's 20-hex-char **API Key** (or the Secret) instead of the **JWT** (long `eyJ…` three-segment string). Create a key with *Admin* (or *Legacy pinFileToIPFS* + *Files write*) scope, paste its JWT, `pm2 reload ecosystem.config.cjs`. Check with `curl -H "Authorization: Bearer $JWT" https://api.pinata.cloud/data/testAuthentication`. |
 | Launch page says no factory for this chain | Wallet is not on chain 4663, or `packages/shared/addresses/4663.json` was overwritten (must be `0x12967ddc…`). |
 | RPC rate-limit errors in indexer logs | `hardenedHttp` retries transient errors; if persistent, move `PONDER_RPC_URL` to a dedicated endpoint. |
 | certbot fails | DNS not propagated yet, or port 80 blocked (`sudo ufw status`). |
