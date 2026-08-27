@@ -55,7 +55,9 @@ route of its own (`/contract-verification` → 404); its front end reads `/api/a
 (`{status, sources, matchType: "partial"|…}`) from its own backend, whose upstream (Sourcify and/or Blockscout) and
 cache TTL are not visible. Nothing to submit there — re-check after Sourcify/Blockscout propagate.
 
-**Blockscout — pending.** Both addresses have code on-chain (`cast code` → 4488 / 21028 bytes), but Blockscout
+**Blockscout — LaunchFactory ✅ fully verified (2026-08-27 04:41 UTC, via the REST v2 standard-input route);
+Locker ⏳ pending** — Blockscout still had not detected the Locker as a contract (`/api/v2/smart-contracts/… → 404`)
+at 13:00 local; resubmit the v2 command below once it appears. Background: both addresses have code on-chain (`cast code` → 4488 / 21028 bytes), but Blockscout
 (`/api/v2/addresses/{addr}`) still reported `is_contract: false` and `/api/v2/smart-contracts/{addr}` → 404 well after
 the block was indexed — its contract detector lags the block indexer — so every verification route failed
 ("Address is not a smart-contract", then "Too many requests" from the Etherscan-compatible `/api` shim). Retry once
