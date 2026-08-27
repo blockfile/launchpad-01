@@ -117,8 +117,9 @@ EOF
 ```
 
 Notes:
-- `PINATA_JWT` — from https://app.pinata.cloud (API Keys → *pinFileToIPFS* scope). Without it the pin server silently
-  returns fake `ipfs://mock-…` URIs.
+- `PINATA_JWT` — https://app.pinata.cloud → API Keys → New Key → **Admin** (or *Legacy pinFileToIPFS* + *Files write*).
+  Copy the **JWT** field — the long `eyJ…` three-segment string — **not** the 20-hex-char "API Key" or the "API
+  Secret" (the pin server refuses to start with those). Without any value it silently returns fake `ipfs://mock-…` URIs.
 - `VITE_WALLETCONNECT_PROJECT_ID` — free at https://cloud.reown.com. Without it the app still works with injected
   wallets (MetaMask) but logs 403s from WalletConnect.
 - The public RPC is rate-limited/flaky; if you get a dedicated Robinhood Chain RPC URL, put it in `PONDER_RPC_URL`.
