@@ -68,9 +68,12 @@ test("addresses map has chain 4663 with the DEX addresses filled", () => {
   assert.equal(chain.uniswapV3Factory, "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA");
   assert.equal(chain.positionManager, "0x73991a25C818Bf1f1128dEAaB1492D45638DE0D3");
   assert.equal(chain.swapRouter, "0xCaf681a66D020601342297493863E78C959E5cb2");
-  // Not deployed yet — no broadcast log exists.
-  assert.equal(chain.factory, null);
-  assert.equal(chain.locker, null);
+  // Deployed to Robinhood Chain mainnet on 2026-08-27 (Deploy.s.sol, deployer
+  // 0xe9Df…7a89, Locker at block 47146567 / LaunchFactory at 47146568) and
+  // promoted via `PROMOTE_DEPLOY_ADDRESSES=1 npm run gen-abis`. These are the
+  // live addresses B/C index and call — changing them means a redeploy.
+  assert.equal(chain.factory?.toLowerCase(), "0x12967ddc45fee0450d5f119e3af2ca297a1adbe1");
+  assert.equal(chain.locker?.toLowerCase(), "0xd00f3223dfcf1063cea9ebcf911870fdd0aa940d");
 });
 
 test("addresses map has chain 46630 (testnet)", () => {
