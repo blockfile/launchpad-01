@@ -44,7 +44,18 @@ Indexer: `PONDER_START_BLOCK=47146567`.
 
 ## Verification
 
-_pending as of 2026-08-27 ~12:30._ Both addresses have code on-chain (`cast code` → 4488 / 21028 bytes), but Blockscout
+**Sourcify — verified (exact match, creation + runtime) on 2026-08-27:**
+- Locker `0xD00F…940D` — https://sourcify.dev/server/v2/contract/4663/0xD00F3223dfCF1063CEa9EbCF911870fdd0AA940D (matchId 46835668)
+- LaunchFactory `0x1296…dBe1` — https://sourcify.dev/server/v2/contract/4663/0x12967ddc45fee0450d5F119E3Af2ca297a1AdBe1 (matchId 46835669)
+- Submitted with `forge verify-contract --verifier sourcify --chain-id 4663 <addr> <path:Name> --constructor-args <abi-encoded>`.
+- Sourcify forwards to Blockscout automatically; that forward failed with Blockscout's 503 (see below).
+
+**rh-scan.com — shows "unverified" as of 2026-08-27 12:35.** It is a custom Next.js explorer with no submission
+route of its own (`/contract-verification` → 404); its front end reads `/api/address/{addr}/contract-verification`
+(`{status, sources, matchType: "partial"|…}`) from its own backend, whose upstream (Sourcify and/or Blockscout) and
+cache TTL are not visible. Nothing to submit there — re-check after Sourcify/Blockscout propagate.
+
+**Blockscout — pending.** Both addresses have code on-chain (`cast code` → 4488 / 21028 bytes), but Blockscout
 (`/api/v2/addresses/{addr}`) still reported `is_contract: false` and `/api/v2/smart-contracts/{addr}` → 404 well after
 the block was indexed — its contract detector lags the block indexer — so every verification route failed
 ("Address is not a smart-contract", then "Too many requests" from the Etherscan-compatible `/api` shim). Retry once
